@@ -61,8 +61,15 @@ export interface Source {
   /** Produce a (possibly partial) config tree. Returns the raw, untyped shape. */
   read(): Promise<unknown>;
 
-  /** Optional: subscribe to changes. Sources that cannot watch (env, flags) omit this. */
-  watch?(handler: ReloadHandler): Unwatch;
+  /**
+   * Optional: subscribe to changes. Sources that cannot watch (env, flags) omit this.
+   *
+   * The `notify` callback is a zero-argument signal — sources only know that
+   * something changed, not what the merged-and-validated next snapshot looks
+   * like. The pipeline owns the next/diff computation and dispatches via
+   * its own `onChange` handlers.
+   */
+  watch?(notify: () => void): Unwatch;
 
   /**
    * Per-source override of array merge policy.

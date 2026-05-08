@@ -2,8 +2,9 @@ import { ParseError } from "../errors.js";
 import type { ParserRegistry } from "../parsers/registry.js";
 import { defaultRegistry, getParser } from "../parsers/registry.js";
 import { getRuntime } from "../runtime/detect.js";
-import type { Runtime, Source } from "../types.js";
+import type { Runtime, Source, Unwatch } from "../types.js";
 import { StandardPriority } from "../types.js";
+import { watchFile, type WatcherOptions } from "../watcher/index.js";
 
 export interface FileSourceOptions {
   /** Path to the config file. Resolved relative to process.cwd() unless absolute. */
@@ -22,6 +23,15 @@ export interface FileSourceOptions {
   readonly arrayMerge?: "replace" | "concat";
   /** Optional. If true, missing file is treated as empty config (read() resolves undefined) instead of throwing. Default: false. */
   readonly optional?: boolean;
+  /**
+   * Optional. Watcher tuning passed through to {@link watchFile}.
+   * Currently exposes `debounceMs`, `resolveSymlinks`, and `onError`.
+   * If omitted, defaults are used.
+   */
+  readonly watch?: Pick<
+    WatcherOptions,
+    "debounceMs" | "resolveSymlinks" | "onError"
+  >;
 }
 
 /** Manual posix basename — avoids importing node:path so this module stays runtime-agnostic. */
@@ -56,6 +66,7 @@ export function fileSource(options: FileSourceOptions): Source {
     priority,
     arrayMerge,
     optional,
+    watch: watchOptions,
   } = options;
 
   const formatKey = format ?? extOf(path);
@@ -91,6 +102,50 @@ export function fileSource(options: FileSourceOptions): Source {
           { sourcePath: path, parserName: formatKey, cause },
         );
       }
+    },
+    watch(notify: () => void): Unwatch {
+      // watchFile is async (it resolves symlinks and detects runtime), but
+      // Source.watch is synchronous. We start the watcher eagerly and wrap
+      // the eventual Unwatch in a closure that disposes once it resolves
+      // (or queues a disposal flag if Unwatch lands first).
+      let disposed = false;
+      let innerUnwatch: Unwatch | undefined;
+      const startError = (err: unknown) => {
+        watchOptions?.onError?.(err);
+      };
+      void watchFile(path, notify, {
+        ...(watchOptions?.debounceMs !== undefined
+          ? { debounceMs: watchOptions.debounceMs }
+          : {}),
+        ...(watchOptions?.resolveSymlinks !== undefined
+          ? { resolveSymlinks: watchOptions.resolveSymlinks }
+          : {}),
+        ...(watchOptions?.onError !== undefined
+          ? { onError: watchOptions.onError }
+          : {}),
+        ...(runtimeOverride !== undefined ? { runtime: runtimeOverride } : {}),
+      })
+        .then((un) => {
+          if (disposed) {
+            const r = un();
+            if (r && typeof (r as Promise<void>).catch === "function") {
+              (r as Promise<void>).catch(startError);
+            }
+          } else {
+            innerUnwatch = un;
+          }
+        })
+        .catch(startError);
+      return () => {
+        disposed = true;
+        if (innerUnwatch) {
+          const r = innerUnwatch();
+          innerUnwatch = undefined;
+          if (r && typeof (r as Promise<void>).catch === "function") {
+            (r as Promise<void>).catch(startError);
+          }
+        }
+      };
     },
   };
 
