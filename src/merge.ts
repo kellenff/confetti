@@ -1,3 +1,5 @@
+import type { SourceName } from "./types.js";
+
 /** Per-layer config tree with optional merge policy. */
 export interface MergeLayer {
   /** The (possibly partial) config tree for this layer. May be undefined to indicate "no contribution". */
@@ -7,6 +9,26 @@ export interface MergeLayer {
    * layer's array at the same path. Default 'replace' if absent.
    */
   readonly arrayMerge?: "replace" | "concat";
+  /** Source identifier — used to build the provenance map. */
+  readonly source: SourceName;
+}
+
+/**
+ * Result of {@link deepMerge}: the merged value plus a provenance map
+ * recording which source last wrote each leaf path. Path keys use
+ * dot notation (e.g. `"server.port"`, `"tags"`); the empty string `""`
+ * denotes the root.
+ *
+ * "Leaf" rule (A1):
+ *  - Primitives (string, number, boolean, null, undefined) are leaves.
+ *  - Arrays are leaves at the array path itself (no per-element entries).
+ *    Whichever layer triggered the final array operation owns the path,
+ *    for both `replace` and `concat` policies (the higher layer "won").
+ *  - Plain objects are never recorded; their children carry provenance.
+ */
+export interface MergeResult {
+  readonly value: unknown;
+  readonly provenance: ReadonlyMap<string, SourceName>;
 }
 
 const POLLUTION_KEYS = new Set(["__proto__", "constructor", "prototype"]);
@@ -18,8 +40,8 @@ const POLLUTION_KEYS = new Set(["__proto__", "constructor", "prototype"]);
  *
  * Special-case rules:
  *  - `undefined` from a higher layer means "no contribution" — keeps
- *    lower layer's value. This is how envSource/flagsSource indicate
- *    that a key wasn't supplied.
+ *    lower layer's value (and provenance). This is how envSource /
+ *    flagsSource indicate that a key wasn't supplied.
  *  - `null` is a deliberate value, not absence. A higher null overrides.
  *  - Type mismatch (object vs primitive, array vs object) — higher wins
  *    wholesale, no merge attempted.
@@ -29,24 +51,49 @@ const POLLUTION_KEYS = new Set(["__proto__", "constructor", "prototype"]);
  *
  * Pure: does not mutate any input layer.
  */
-export function deepMerge(layers: readonly MergeLayer[]): unknown {
-  if (layers.length === 0) return undefined;
-  let result: unknown = layers[0]?.value;
+export function deepMerge(layers: readonly MergeLayer[]): MergeResult {
+  if (layers.length === 0) {
+    return { value: undefined, provenance: new Map() };
+  }
+
+  const provenance = new Map<string, SourceName>();
+  const first = layers[0];
+  if (first === undefined) {
+    return { value: undefined, provenance };
+  }
+
+  let result: unknown = first.value;
+  recordProvenance(provenance, "", first.value, first.source);
+
   for (let i = 1; i < layers.length; i++) {
     const layer = layers[i];
     if (layer === undefined) continue;
-    result = mergeOne(result, layer.value, layer.arrayMerge ?? "replace");
+    result = mergeOne(
+      result,
+      layer.value,
+      layer.arrayMerge ?? "replace",
+      "",
+      layer.source,
+      provenance,
+    );
   }
-  return result;
+
+  return { value: result, provenance };
 }
 
 function mergeOne(
   low: unknown,
   high: unknown,
   arrayPolicy: "replace" | "concat",
+  path: string,
+  source: SourceName,
+  provenance: Map<string, SourceName>,
 ): unknown {
   if (high === undefined) return low;
-  if (low === undefined) return high;
+  if (low === undefined) {
+    recordProvenance(provenance, path, high, source);
+    return high;
+  }
 
   if (isPlainObject(low) && isPlainObject(high)) {
     const out: Record<string, unknown> = {};
@@ -57,17 +104,49 @@ function mergeOne(
     }
     for (const key of Object.keys(high)) {
       if (POLLUTION_KEYS.has(key)) continue;
-      out[key] = mergeOne(out[key], high[key], arrayPolicy);
+      const childPath = path === "" ? key : `${path}.${key}`;
+      out[key] = mergeOne(
+        out[key],
+        high[key],
+        arrayPolicy,
+        childPath,
+        source,
+        provenance,
+      );
     }
     return out;
   }
 
   if (Array.isArray(low) && Array.isArray(high)) {
+    // A1: higher layer wins the merge, so it owns the array path.
+    provenance.set(path, source);
     return arrayPolicy === "concat" ? [...low, ...high] : [...high];
   }
 
   // Type mismatch or primitives: higher wins.
+  recordProvenance(provenance, path, high, source);
   return high;
+}
+
+/**
+ * Walk `value` and write provenance entries for every leaf path.
+ * Plain objects recurse; arrays and primitives are leaves (per A1).
+ */
+function recordProvenance(
+  provenance: Map<string, SourceName>,
+  path: string,
+  value: unknown,
+  source: SourceName,
+): void {
+  if (isPlainObject(value)) {
+    for (const key of Object.keys(value)) {
+      if (POLLUTION_KEYS.has(key)) continue;
+      const childPath = path === "" ? key : `${path}.${key}`;
+      recordProvenance(provenance, childPath, value[key], source);
+    }
+    return;
+  }
+  provenance.set(path, source);
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

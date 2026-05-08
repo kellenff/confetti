@@ -236,7 +236,7 @@ describe("defineConfig: schema parse failure aggregates (SC3)", () => {
     ).rejects.toBeInstanceOf(AggregatedConfigError);
   });
 
-  it("each issue carries source='merged' and a Zod code", async () => {
+  it("each issue carries the contributing source and a Zod code", async () => {
     const schema = z.object({ port: z.number() });
     let caught: unknown;
     try {
@@ -251,9 +251,91 @@ describe("defineConfig: schema parse failure aggregates (SC3)", () => {
     if (!isAggregatedConfigError(caught)) return; // narrow for TS
     expect(caught.issues.length).toBeGreaterThan(0);
     const first = caught.issues[0];
-    expect(first?.source).toBe("merged");
+    // override supplied the bad value, so the issue is attributed to it.
+    expect(first?.source).toBe("override");
     expect(first?.code).toBe("invalid_type");
     expect(first?.path).toEqual(["port"]);
+  });
+
+  it("falls back to source='merged' for structural failures (missing required keys)", async () => {
+    const schema = z.object({
+      port: z.number(),
+      name: z.string(),
+    });
+    let caught: unknown;
+    try {
+      // No layer contributes either key — these are structural failures.
+      await defineConfig({
+        schema,
+        sources: [overrideSource({})],
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(isAggregatedConfigError(caught)).toBe(true);
+    if (!isAggregatedConfigError(caught)) return;
+    for (const issue of caught.issues) {
+      expect(issue.source).toBe("merged");
+    }
+  });
+
+  it("attributes issues to the actual contributing layer across multiple sources", async () => {
+    const schema = z.object({
+      port: z.number(),
+      host: z.string(),
+    });
+    let caught: unknown;
+    try {
+      // env contributes a bad port (string after coercion failure path is
+      // owned by envSource itself; here we hand env a literal value via
+      // a hand-built source so we can drive the pipeline directly).
+      await defineConfig({
+        schema,
+        sources: [
+          {
+            name: "file",
+            priority: 25,
+            read: () => Promise.resolve({ host: 12345 }), // wrong type from file
+          },
+          {
+            name: "env",
+            priority: 50,
+            read: () => Promise.resolve({ port: "not-a-number" }), // wrong type from env
+          },
+        ],
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(isAggregatedConfigError(caught)).toBe(true);
+    if (!isAggregatedConfigError(caught)) return;
+    const byPath = new Map(
+      caught.issues.map((i) => [i.path.join("."), i.source]),
+    );
+    expect(byPath.get("port")).toBe("env");
+    expect(byPath.get("host")).toBe("file");
+  });
+
+  it("attributes issues to user-defined source names", async () => {
+    const schema = z.object({ port: z.number() });
+    let caught: unknown;
+    try {
+      await defineConfig({
+        schema,
+        sources: [
+          {
+            name: "aws-secrets",
+            priority: 75,
+            read: () => Promise.resolve({ port: "bogus" }),
+          },
+        ],
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(isAggregatedConfigError(caught)).toBe(true);
+    if (!isAggregatedConfigError(caught)) return;
+    expect(caught.issues[0]?.source).toBe("aws-secrets");
   });
 
   it("aggregates multiple Zod issues into one error", async () => {
