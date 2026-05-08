@@ -14,69 +14,120 @@ import type {
 } from "./types.js";
 
 /**
- * Options for {@link defineConfig}. Sources are sorted by priority,
- * so caller-supplied order is irrelevant for precedence.
+ * Options for {@link defineConfig}.
+ *
+ * Sources are sorted by priority ascending before merge, so caller-supplied
+ * order in the array is irrelevant for precedence — only the `priority`
+ * field on each source matters. Ties are broken by declaration order.
  */
 export interface DefineConfigOptions<T extends z.ZodTypeAny> {
-  /** Zod schema. The output type drives the return type of `current`. */
+  /** Zod schema. The schema's output type drives the type of `Config.current`. */
   readonly schema: T;
-  /** Source layers. Order is irrelevant — sorted by priority ascending. */
+  /** Source layers. Sorted internally by priority ascending; declaration order breaks ties. */
   readonly sources: readonly Source[];
   /**
-   * Optional. Inject parsers (CSP-safe path). Keyed by format name or extension.
+   * Optional. Inject parsers for the CSP-safe path, keyed by format name
+   * or extension.
    *
-   * NOTE: the happy-path pipeline does not own parser routing — fileSource
-   * accepts its own `parsers` registry directly. This option is declared
-   * on the API surface for forward compatibility. For now it is accepted
-   * and ignored; pass parsers via fileSource({ parsers }) instead. See
-   * `src/sources/file.ts` for the actual consumer.
+   * Reserved for forward compatibility: the happy-path pipeline does not
+   * own parser routing today — {@link fileSource} accepts its own
+   * `parsers` registry directly. This option is currently accepted and
+   * ignored; pass parsers via `fileSource({ parsers })` instead.
    */
   readonly parsers?: Record<string, Parser>;
   /**
-   * Optional. Custom runtime override (defaults to detected).
+   * Optional. Custom {@link Runtime} override.
    *
-   * NOTE: same forward-looking shape as `parsers` — sources own their own
-   * runtime injection (envSource, fileSource accept a `runtime` option).
+   * Reserved for forward compatibility: today, sources own their own
+   * runtime injection (`envSource`, `fileSource` each accept a
+   * `runtime` option). Defaults to the auto-detected runtime.
    */
   readonly runtime?: Runtime;
 }
 
 /**
- * Loaded, validated, frozen configuration with reload + subscriptions.
+ * Live, validated, deeply-frozen configuration with reload and
+ * subscription support.
  *
- * `current` is a getter — the snapshot reference is replaced on every
- * successful reload.
+ * Returned by {@link defineConfig}. `current` is a getter, not a static
+ * field — the snapshot reference is replaced atomically on every
+ * successful reload, so existing references to `current` continue to
+ * point at their original snapshot. Snapshots are deep-frozen.
  */
 export interface Config<T> {
-  /** Frozen current snapshot — getter returns the latest after reload. */
+  /** Latest validated, frozen snapshot. Replaced on every successful reload. */
   readonly current: T;
-  /** Programmatically re-run the pipeline. Returns the new snapshot. */
+  /**
+   * Re-run the pipeline (load → merge → validate → freeze). Resolves to
+   * the new snapshot, which is also assigned to `current` and dispatched
+   * to {@link ReloadHandler}s registered via {@link Config.onChange}.
+   */
   reload(): Promise<T>;
-  /** Subscribe to successful reloads. Handlers run in registration order. */
+  /**
+   * Subscribe to successful reloads. Handlers run in registration order.
+   * Returns an {@link Unwatch} that removes only this handler.
+   */
   onChange(handler: ReloadHandler): Unwatch;
-  /** Subscribe to subscriber/source errors. Handlers run in registration order. */
+  /**
+   * Subscribe to errors raised by sources or by other subscribers.
+   * Handlers run synchronously in registration order. Returns an
+   * {@link Unwatch} that removes only this handler.
+   */
   onError(handler: ErrorHandler): Unwatch;
-  /** Tear down all watchers + subscribers. After close(), reload() is a no-op. */
+  /**
+   * Tear down all source watchers and subscriber lists. After `close()`
+   * resolves, `reload()` is a no-op and no further `onChange`/`onError`
+   * dispatch occurs. Idempotent.
+   */
   close(): Promise<void>;
 }
 
 /**
- * The pipeline:
- *   schema → walkSchema (eager validation; surfaces UnsupportedSchemaError)
- *          → load all sources in parallel
- *          → sort by priority asc; build MergeLayer[] (low → high)
- *          → deepMerge
- *          → schema.parse (wraps ZodError in AggregatedConfigError)
- *          → recursive Object.freeze
- *          → return Config<T>
+ * Build a live {@link Config} from a Zod schema and a set of source
+ * layers.
  *
- * Source-level errors (ParseError, AggregatedConfigError from envSource,
- * etc.) propagate as-is — the pipeline only aggregates schema-level
- * validation issues, not source-load errors.
+ * @param options - Schema, sources, and optional injection points.
+ * @returns A `Config` whose `current` is typed as `z.output<typeof schema>`.
  *
- * After the initial load, every source that exposes `watch` is subscribed
- * with a notify callback that triggers `reload()`. Concurrent notifications
- * are coalesced via a single-pending pattern (latest-wins).
+ * Pipeline (run on initial load and on every reload):
+ *
+ * 1. `walkSchema` — eager schema validation. Surfaces
+ *    {@link UnsupportedSchemaError} synchronously before any I/O.
+ * 2. Load all sources in parallel via `Source.read()`.
+ * 3. Sort by `priority` ascending; ties resolved by declaration order.
+ * 4. Deep-merge layers low → high.
+ * 5. `schema.parse` — Zod errors are wrapped in
+ *    {@link AggregatedConfigError} with per-issue source attribution.
+ * 6. Recursive `Object.freeze` on the result.
+ *
+ * Source-level errors (e.g. {@link ParseError} from `fileSource`,
+ * coercion `AggregatedConfigError`s from `envSource`) propagate as-is —
+ * the pipeline only aggregates schema-level validation issues, not
+ * source-load errors.
+ *
+ * After the initial load, every source that exposes `watch` is wired
+ * to `reload()`. Concurrent notifications are coalesced via a
+ * single-pending pattern (latest-wins).
+ *
+ * @throws {@link UnsupportedSchemaError} when the schema contains
+ *   constructs confetti does not support.
+ * @throws {@link AggregatedConfigError} when validation fails.
+ *
+ * @example
+ * ```ts
+ * import { z } from 'zod';
+ * import { defineConfig, fileSource, envSource } from 'confetti';
+ *
+ * const schema = z.object({ port: z.number(), host: z.string() });
+ * const config = await defineConfig({
+ *   schema,
+ *   sources: [
+ *     fileSource({ path: 'config.yaml' }),
+ *     envSource({ schema, prefix: 'APP_' }),
+ *   ],
+ * });
+ * console.log(config.current.port);
+ * ```
  */
 export async function defineConfig<T extends z.ZodTypeAny>(
   options: DefineConfigOptions<T>,

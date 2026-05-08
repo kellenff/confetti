@@ -6,8 +6,11 @@ import type { Runtime, Source, Unwatch } from "../types.js";
 import { StandardPriority } from "../types.js";
 import { watchFile, type WatcherOptions } from "../watcher/index.js";
 
+/**
+ * Options for {@link fileSource}.
+ */
 export interface FileSourceOptions {
-  /** Path to the config file. Resolved relative to process.cwd() unless absolute. */
+  /** Path to the config file. Resolved relative to `process.cwd()` unless absolute. */
   readonly path: string;
   /** Optional. Force a specific format/parser by registry key (e.g. 'yaml'). Overrides extension detection. */
   readonly format?: string;
@@ -56,6 +59,33 @@ function isMissingFileError(err: unknown): boolean {
   return typeof message === "string" && message.includes("No such file");
 }
 
+/**
+ * Build a {@link Source} backed by a single config file.
+ *
+ * The format is selected by `options.format` if supplied, else inferred
+ * from the file extension. Parsers are looked up in `options.parsers`
+ * (defaults to a registry pre-loaded with the built-in JSON parser).
+ * Unknown formats throw at construction time so callers see the failure
+ * before any I/O.
+ *
+ * The returned source supports `watch` via `watchFile` — if the host
+ * runtime exposes filesystem watching, the source notifies the pipeline
+ * on every change. Pass `optional: true` to treat a missing file as an
+ * empty contribution rather than an error.
+ *
+ * @example
+ * ```ts
+ * defineConfig({
+ *   schema,
+ *   sources: [
+ *     fileSource({ path: './config.yaml' }),
+ *     fileSource({ path: './config.local.yaml', optional: true }),
+ *   ],
+ * });
+ * ```
+ *
+ * @throws {@link Error} if no parser is registered for the resolved format.
+ */
 export function fileSource(options: FileSourceOptions): Source {
   const {
     path,

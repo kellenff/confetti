@@ -10,6 +10,9 @@ import { getRuntime } from "../runtime/detect.js";
 import type { Runtime, Source } from "../types.js";
 import { StandardPriority } from "../types.js";
 
+/**
+ * Options for {@link envSource}.
+ */
 export interface EnvSourceOptions {
   /** Zod schema used to derive expected env keys (input-side walk). */
   readonly schema: z.ZodTypeAny;
@@ -162,6 +165,28 @@ function defaultWarnOnUnknown(): boolean {
   return proc?.env?.NODE_ENV !== "production";
 }
 
+/**
+ * Build a {@link Source} that reads configuration from environment
+ * variables, coerced into the shape demanded by the supplied schema.
+ *
+ * The schema is walked at construction time to derive the set of
+ * expected env-var names — `prefix` + path joined by `separator`. Each
+ * leaf is coerced from its string form (`number`, `boolean`, enum/literal,
+ * or comma-separated array). Coercion failures are aggregated into a
+ * single {@link AggregatedConfigError}.
+ *
+ * Unsupported schema constructs (e.g. transforms, lazy) raise
+ * {@link UnsupportedSchemaError} synchronously from this call.
+ *
+ * @example
+ * ```ts
+ * envSource({ schema, prefix: 'APP_' });
+ * // PORT under `port` is read from APP_PORT
+ * // server.host is read from APP_SERVER__HOST
+ * ```
+ *
+ * @throws {@link UnsupportedSchemaError} for unsupported schema nodes.
+ */
 export function envSource(options: EnvSourceOptions): Source {
   const {
     schema,

@@ -1,15 +1,7 @@
 /**
- * UnsupportedSchemaError — thrown by the schema walker (task 6a) at
- * defineConfig-time when a Zod schema contains a construct we explicitly
- * refuse to support in v0.1.
- *
- * Pattern follows src/errors.ts (custom Error subclass + type guard helper).
- *
- * No SourceName here: this error fires before any source has been read,
- * during static schema validation. It is a programmer error, not a
- * configuration-data error.
+ * Discriminator describing why a schema construct was rejected. See
+ * {@link UnsupportedSchemaError} for context.
  */
-
 export type UnsupportedSchemaReason =
   | "transform" // ZodEffects (refine | transform | preprocess) — refused wholesale in v0.1
   | "lazy" // ZodLazy
@@ -37,10 +29,26 @@ export type UnsupportedSchemaReason =
   | "undefined" // ZodUndefined alone
   | "unrecognized"; // catch-all for future Zod node types we haven't seen
 
+/**
+ * Thrown synchronously from `defineConfig` (and `envSource`) when the
+ * Zod schema contains a construct that confetti explicitly does not
+ * support in this version (e.g. `z.transform`, `z.lazy`, `z.bigint`).
+ *
+ * This is a programmer-time error, not a configuration-data error: it
+ * fires before any source is read, during static schema validation. The
+ * `path` / `reason` / `schemaTypeName` fields are intended for tooling
+ * and human-readable messages — see the README "unsupported schemas"
+ * section for migration tips.
+ *
+ * Use {@link isUnsupportedSchemaError} for type-safe narrowing.
+ */
 export class UnsupportedSchemaError extends Error {
   override readonly name = "UnsupportedSchemaError";
+  /** Path-segments to the offending node. Empty array = schema root. */
   readonly path: readonly string[];
+  /** Why the construct was rejected (categorical). */
   readonly reason: UnsupportedSchemaReason;
+  /** The Zod constructor name (e.g. `'ZodTransform'`). */
   readonly schemaTypeName: string;
 
   constructor(opts: {
@@ -67,6 +75,11 @@ function formatMessage(opts: {
   return `confetti: schema construct '${opts.schemaTypeName}' (${opts.reason}) is not supported ${where}. See README 'unsupported schemas' section for migration tips.`;
 }
 
+/**
+ * Type guard for {@link UnsupportedSchemaError}. Prefer this over
+ * `instanceof` for cross-realm safety and consistency with
+ * {@link isAggregatedConfigError} / {@link isParseError}.
+ */
 export function isUnsupportedSchemaError(
   e: unknown,
 ): e is UnsupportedSchemaError {
