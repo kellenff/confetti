@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Runtime, Unwatch } from "../types.js";
 import { watchFile } from "./index.js";
 
-// Use a short debounce in tests to keep them fast.
+// Use a short debounce in tests to keep them fast. fs.watch event delivery
+// timing varies across platforms (macOS sometimes emits duplicate events
+// ~50ms apart for a single write); cold runs occasionally flake on either
+// 0 calls (events arrive after settle) or 2 calls (events span the
+// debounce). Task 14b will add fake-timer-based scenarios to remove this
+// timing dependency entirely.
 const DEBOUNCE_MS = 25;
 const SETTLE_MS = DEBOUNCE_MS + 25;
 
