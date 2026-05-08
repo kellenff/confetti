@@ -1,113 +1,106 @@
 # confetti — Execute Handoff
 
-**Session paused:** 2026-05-07, 12 of 19 tasks merged, main at `ab57d37`.
+**Session paused:** 2026-05-08, 15 of 19 tasks merged, main at HEAD post-batch-6.
 **Plan:** [`.claude/kernel-outlines/outline-plan-2026-05-07-viper-ts.md`](./kernel-outlines/outline-plan-2026-05-07-viper-ts.md)
-**Resume strategy:** read `.claude/execute-state.json`, this file, then proceed to Batch 5.
+**Resume strategy:** read `.claude/execute-state.json`, this file, then proceed to Batch 7.
 
 ---
 
-## What's on main (post-Batch-4)
+## What's on main (post-Batch-6)
 
 ```
 src/
   types.ts                    ← Source, Parser, Runtime, Unwatch, ReloadHandler, ErrorHandler,
-                                ConfigDiff, SourceName, StandardPriority (singular keys)
-  errors.ts                   ← AggregatedConfigError, ParseError, type guards
-  index.ts                    ← placeholder (task 12 owns public exports)
+                                ConfigDiff, SourceName, StandardPriority
+  errors.ts                   ← AggregatedConfigError, ConfigIssue, ParseError + type guards
+  index.ts                    ← public API surface (defineConfig, sources, errors, types)
+  pipeline.ts                 ← defineConfig pipeline orchestrator (task 12)
+                                  walkSchema → load sources in parallel → deepMerge →
+                                  schema.parse → deepFreeze → Config<T>
+                                  Wraps ZodError as AggregatedConfigError (source='merged'
+                                  pending task 13 source-attribution refinement)
+  pipeline.test.ts            ← 27 tests covering precedence, freeze, type narrowing,
+                                  schema-fail aggregation, source error propagation
   env-keys/
     walker.ts                 ← walkSchema(z.ZodTypeAny) → SchemaLeaf[]
     unsupported.ts            ← UnsupportedSchemaError + 25+ refusal reasons
-    derive.ts                 ← deriveEnvKeys(leaves, { prefix?, separator? }) → EnvKeyMapping[]
-                                  SCREAMING_SNAKE w/ acronym handling, path-preserving (task 6b)
-    walker.test.ts            ← 88 tests
-    derive.test.ts            ← 27 tests
+    derive.ts                 ← deriveEnvKeys (SCREAMING_SNAKE w/ acronym handling)
+    walker.test.ts, derive.test.ts
   runtime/
-    detect.ts                 ← getRuntime(override?) lazy + customRuntime escape hatch
-    node.ts                   ← parent-dir fs.watch + filename filter + error listener
-    deno.ts                   ← inline-declared minimal Deno surface
-    bun.ts                    ← mirrors node, separate module for symmetry
-    detect.test.ts, node.test.ts ← 7 tests
+    detect.ts, node.ts, deno.ts, bun.ts
+    detect.test.ts, node.test.ts
   parsers/
-    json.ts                   ← jsonParser delegating to JSON.parse
-    yaml.ts                   ← loadYamlParser(): Promise<Parser> (lazy, cached) (task 10)
-    yaml-static.ts            ← yamlStaticParser: Parser (static import; CSP-safe) (task 10)
-    toml.ts                   ← loadTomlParser(): Promise<Parser> (lazy, cached) (task 11)
-    toml-static.ts            ← tomlStaticParser: Parser (static import; CSP-safe) (task 11)
-    registry.ts               ← ParserRegistry, defaultRegistry, registerParser,
-                                  withInjectedParsers, getParser (format-aware install hints)
-    registry.test.ts          ← 12 tests
-    yaml.test.ts              ← 8 tests
-    toml.test.ts              ← 7 tests
-  merge.ts                    ← deepMerge(layers) with array policy + pollution guard
-  merge.test.ts               ← 52 tests
+    json.ts                   ← built-in
+    yaml.ts, yaml-static.ts   ← lazy + static (CSP-safe) variants
+    toml.ts, toml-static.ts   ← same pattern with smol-toml
+    registry.ts               ← ParserRegistry, defaultRegistry, withInjectedParsers,
+                                  getParser (format-aware install hints)
+    {registry,yaml,toml}.test.ts
+  merge.ts                    ← deepMerge with array policy + pollution guard
+  merge.test.ts
   sources/
-    override.ts               ← overrideSource(value, options?) priority=100 (task 7)
-    defaults.ts               ← defaultsSource(value, options?) priority=0 (task 7)
-    flags.ts                  ← flagsSource(value, options?) priority=75 (task 7)
-    file.ts                   ← fileSource(options) — extension-detect, ParseError-wraps,
-                                  optional + ENOENT, custom runtime/registry (task 9)
-    sources.test.ts           ← 21 tests
-    file.test.ts              ← 16 tests
+    override.ts, defaults.ts, flags.ts   ← simple Source factories (task 7)
+    file.ts                              ← fileSource (extension-detect, ParseError-wraps,
+                                            optional, custom runtime/registry) (task 9)
+    env.ts                               ← envSource (walks schema, derives keys, coerces
+                                            by inputType, aggregates errors) (task 8)
+    sources.test.ts, file.test.ts, env.test.ts
   watcher/
-    index.ts                  ← watchFile(path, handler, options?) — debounce + symlink resolve
-                                  + onError forwarding + idempotent unwatch (task 14a)
-    index.test.ts             ← 9 tests (1 known cold-run timing flake; see below)
+    index.ts                  ← watchFile (debounce + symlink resolve + onError +
+                                  idempotent unwatch + lazy node:fs/promises import) (task 14a)
+    index.test.ts             ← single real-fs smoke test (cold-run-flake mitigated
+                                  with 100/200ms timing)
+    test/scenarios/           ← edge-case suite (task 14b)
+      atomic-rename.test.ts        real-fs
+      symlink-chain.test.ts        real-fs
+      editor-burst.test.ts         real-fs (loosened to 1≤calls≤2)
+      debounce.test.ts             fake-timer + fake runtime
+      idempotence.test.ts          fake-timer + fake runtime
 ```
 
-**Test count:** 247 passing across 11 files (`vitest run` clean).
+**Test count:** 303 passing across 18 files (`vitest run` clean).
 **Type-check:** `tsc --noEmit` clean on both `tsconfig.json` and `tsconfig.test.json`.
-**Lint:** `oxlint` clean (0 warnings, 0 errors, 34 files, 126 rules).
+**Lint:** `oxlint` clean (0 warnings, 0 errors, 43 files, 126 rules).
 
-**Dependencies added in Batch 4 prep:** `yaml@^2.8.4` and `smol-toml@^1.6.1` as devDeps (commit `7a13040`).
+**Public API:** `defineConfig`, `overrideSource`, `defaultsSource`, `flagsSource`, `fileSource`, `envSource`, `AggregatedConfigError`, `ParseError`, `UnsupportedSchemaError`, type contracts (Source, Parser, Runtime, Unwatch, ReloadHandler, ErrorHandler, ConfigDiff, SourceName, StandardPriorityValue), `StandardPriority` constant.
 
 ---
 
 ## Workflow that's working (unchanged)
 
-For each task:
-
-1. **Spawn babyclaude** with `isolation: "worktree"` — creates worktree at `.claude/worktrees/agent-XXX/` on `worktree-agent-XXX`.
-2. **Babyclaude implements** → commits → returns JSON output.
-3. **Spawn spec-reviewer** (sonnet) — verifies acceptance criteria. JSON to `.claude/reviews/spec/N.json`.
+1. **Spawn babyclaude** with `isolation: "worktree"` — creates worktree at `.claude/worktrees/agent-XXX/`.
+2. **Babyclaude implements** → commits → returns JSON.
+3. **Spawn spec-reviewer** (sonnet) — verifies criteria. JSON to `.claude/reviews/spec/N.json`.
 4. **If spec PASS, spawn code-reviewer** (opus) — quality dimensions w/ confidence scoring. JSON to `.claude/reviews/code/N.json`.
-5. **If code review surfaces important issues** — orchestrator (you) edits worktree files inline, commits a `fix(...)` commit on the same branch.
-6. **`git merge --no-ff` from main** — runs cleanly through normal Bash now (hook patched).
+5. **If review surfaces actionable concerns** — orchestrator (you) edits worktree files inline, commits a `fix(...)` commit on the worktree branch.
+6. **`git merge --no-ff` from main** — runs cleanly through normal Bash (hook patched in this project's prior session).
 
 ---
 
-## Critical gotchas (UPDATED)
+## Critical gotchas
 
-### 1. ~~merge-gate hook is broken~~ — FIXED ✓
+### 1. ~~merge-gate hook~~ — patched in plugin cache, persists for now (re-apply on plugin update if needed)
 
-The `~/.claude/plugins/cache/claudikins-marketplace/claudikins-kernel/1.2.0/hooks/merge-gate.sh` script was patched in this session. Two `grep -oP` calls converted to BSD-compatible `sed -nE` (commits stayed on the plugin cache directly — re-apply on plugin update).
+### 2. Don't `npm install` while a worktree is running — install on main + commit FIRST
 
-Patched logic (line 29 & 38 of the hook):
-
-```sh
-MERGE_BRANCH=$(echo "$COMMAND" | sed -nE 's/.*git[[:space:]]+merge[[:space:]]+([^[:space:];|&]+).*/\1/p' | head -1)
-TASK_ID=$(echo "$MERGE_BRANCH" | sed -nE 's/.*task-([^-]+).*/\1/p')
-```
-
-All Batch 4 merges ran through Bash without `!` workarounds.
-
-### 2. Don't `npm install` while a worktree is running
-
-(Unchanged from prior handoff.) Install peer deps in main + commit BEFORE spawning agents that need them. This is how `yaml`/`smol-toml` were prepped for tasks 10/11.
-
-### 3. Worktree base diverges from main as main moves forward
-
-(Unchanged.) Use `git merge --no-ff` consistently.
+### 3. Worktree base diverges as main moves forward — use `git merge --no-ff` consistently
 
 ### 4. State + reviews + worktree locations
 
 - **Plan:** `.claude/kernel-outlines/outline-plan-2026-05-07-viper-ts.md`
-- **State:** `.claude/execute-state.json` (now reflects 12/19 merged)
-- **Reviews:** `.claude/reviews/spec/N.json` and `.claude/reviews/code/N.json` (12 of each so far)
-- **Worktrees:** `.claude/worktrees/agent-XXX/` — Batch 4 left 6 more lingering. Run `git worktree prune` when convenient.
+- **State:** `.claude/execute-state.json` (now reflects 15/19 merged)
+- **Reviews:** `.claude/reviews/spec/N.json` and `.claude/reviews/code/N.json` (15 of each)
+- **Worktrees:** `.claude/worktrees/agent-XXX/` — accumulating; `git worktree prune` when convenient
 
-### 5. Watcher test cold-run flake (NEW)
+### 5. ~~Watcher cold-run flake~~ — addressed in task 14b. Single smoke test in index.test.ts uses 100/200ms timing; deterministic logic moved to scenarios/ with fake timers. Editor-burst real-fs assertion loosened to `1 ≤ calls ≤ 2`.
 
-`src/watcher/index.test.ts` has a known ~1-in-8 cold-run flake (single-change test, expected 1, got 0 or 2 depending on timing). Subsequent runs in the same session are stable. Cause: macOS `fs.watch` event-delivery latency vs. 25ms debounce + 50ms settle. Tuning the constants only shifts which test flakes; the right fix is fake-timers in **task 14b**. The current values are documented inline in the test file with a forward-pointer to 14b.
+### 6. NEW: pipeline accepts but ignores `parsers` and `runtime` options
+
+The `DefineConfigOptions.parsers` and `.runtime` fields exist on the API surface but are NO-OP in task 12. Sources own their own parser/runtime injection (`fileSource({ parsers })`, `envSource({ runtime })`). JSDoc documents this. Task 15's reload work may revisit. Code reviewer flagged this as a footgun (confidence 55) — defer to task 15 to decide.
+
+### 7. NEW: schema-validation issues currently all use `source: 'merged'`
+
+Task 12 wraps ZodError as AggregatedConfigError with `source='merged'` for every issue. **Task 13 will refine** to attribute back to the contributing layer (per plan §2 SC3). When implementing 13, you'll need per-path layer tracking — this likely means modifying merge.ts or carrying provenance through the pipeline.
 
 ---
 
@@ -117,46 +110,68 @@ All Batch 4 merges ran through Bash without `!` workarounds.
 2. Read this file
 3. Read `.claude/execute-state.json`
 4. Verify state with: `git log --oneline --graph -15 && npx tsc --noEmit && npx vitest run 2>&1 | tail`
-5. Optionally: `git worktree prune` to clean up Batch 1-4 stale worktrees
-6. Begin **Batch 5** — see below
+5. Optionally: `git worktree prune` to clean up stale worktrees from Batches 1-6
+6. Begin **Batch 7** — see below
 
 ---
 
-## Batch 5 — what's next (2 tasks, parallelizable)
+## Batch 7 — what's next (3 tasks, parallelizable)
 
-| #   | Task                                                       | Files                               | Notes                                                                                                                                              |
-| --- | ---------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 8   | envSource (uses runtime + env-keys/derive)                 | `src/sources/env.ts`, `env.test.ts` | Walks env via runtime.listEnv(prefix), maps via deriveEnvKeys + EnvKeyMapping. Coerces by leaf.inputType. Dev-mode warns on unknown prefixed keys. |
-| 14b | Watcher edge-case fixtures: atomic-rename, symlink, bursts | `src/watcher/test/scenarios/`       | Fake-timer scenarios + atomic-rename integration test. Replace 14a's brittle real-fs timing with deterministic harness where possible.             |
+| #   | Task                                                      | Files                                                           | Notes                                                                                                                                                    |
+| --- | --------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 13  | Aggregated parse errors with per-issue source attribution | `src/errors.ts` (extend), `src/errors.test.ts`                  | Refine task 12's `source: 'merged'` to attribute back to the contributing source. Likely needs provenance threading through merge.ts.                    |
+| 15  | Reload pipeline + diff + onChange + onError sequencing    | `src/pipeline.ts` (extend), `src/diff.ts`, `src/subscribers.ts` | Adds reload(), onChange, onError, close() to Config<T>. Integrates 14a watcher with pipeline. Second long-pole. Plan flagged as learning-mode candidate. |
+| 16  | Cross-runtime CI matrix (Node 20+22, Deno, Bun)           | `.github/workflows/ci.yml`                                      | CI infrastructure only. Mostly mechanical.                                                                                                               |
 
-Both depend on already-merged tasks (8 needs 6b + 3; 14b needs 14a). No file collision. Spawn both in parallel.
+**Dependencies:** all three only need 12 (already merged). Independent file trees, no merge conflicts expected.
 
-**Open question for the resumer:** Task 14b should consider whether to also remove the cold-run flake in `src/watcher/index.test.ts` itself — converting to fake timers — or to keep the real-fs smoke test and just add deterministic scenario coverage on top. Recommendation: keep one real-fs smoke test + add deterministic `vi.useFakeTimers()` coverage for the deterministic scenarios.
+**Recommended order if not parallel:**
+
+- 16 first (smallest, mechanical)
+- 13 next (constrained scope)
+- 15 last (largest, integrates with 14a)
+
+**Open question for 13:** how to thread source provenance. Two options:
+
+- **A)** `deepMerge` returns `(value, provenance)` where provenance is a path → SourceName map. Pipeline maintains the map; on Zod error, looks up the offending path's provenance.
+- **B)** Per-source layered "tagged value" tree (every leaf wrapped in `{value, source}`); merge preserves tags; final unwrap before schema.parse. More invasive.
+
+A is less invasive but complicates merge.ts. Worth a discuss with user before spawning 13.
+
+**Open question for 15 (learning-mode candidate):**
+
+> "Reload diff (~30-40 lines): structural-equality vs reference-equality; how to represent array changes; per-path or aggregated. Good fit for hand-write."
+
+Ask user at execute time whether they want to hand-write the diff portion.
 
 ---
 
-## Batch 6+ summary (downstream)
+## Batch 8+ summary (downstream)
 
-- **Batch 6** (1): `12` (pipeline orchestrator — integrates 5, 7, 8, 9; the load-bearing task)
-- **Batch 7** (3): `13` (errors polish), `15` (reload + diff + onChange/onError), `16` (CI matrix)
-- **Batch 8** (1): `17` (TSDoc + expect-type tests)
-- **Batch 9** (1): `18` (README)
+- **Batch 8** (1): `17` (TSDoc + expect-type tests across all public API)
+- **Batch 9** (1): `18` (README with quickstart + migration-from-Viper-Go)
 
 ---
 
-## Review-fix history this session (Batch 4)
+## Review-fix history (recent batches)
 
-- **14a code review CONCERNS** — top-level `node:fs/promises` import broke Workers compat. Fixed inline by deferring to dynamic `await import('node:fs/promises')` inside the resolveSymlinks block (commit `6ad118d` on the worktree branch, included in merge `ab57d37`).
-- **14a test timing** — multiple tuning attempts; reverted to agent's original 25ms/50ms with documenting comment + forward-pointer to task 14b (commit `e56710e`).
+**Batch 5:**
 
-All other code reviews were PASS with only minor (sub-threshold) issues — DRY suggestions in tasks 7/9, cache-promise vs cache-parser pattern in tasks 10/11. None merge-blocking.
+- Task 8: boolean trim consistency (whitespace before lowercase) + missing test for empty-string string field
+- Task 14b: editor-burst real-fs assertion loosened from `=== 1` to `1 ≤ calls ≤ 2` with bumped 200ms debounce
+
+**Batch 6:**
+
+- Task 12: deepFreeze<U> generic to remove redundant cast; class-instance non-freeze test removed (unrealizable through supported schema set; replaced with comment explaining the guard's defensive intent)
+
+All other code reviews PASS with sub-threshold minor issues (DRY suggestions, doc nits). None merge-blocking.
 
 ---
 
 ## Conversation context tips for the resuming session
 
-- Memory: this user has a private global CLAUDE.md preferring functional TS, Zod, "parse don't validate", oxlint+oxfmt, fastify. Tone is concise; avoid over-explaining familiar tech.
-- The plan file in `.claude/kernel-outlines/` is the source of truth for acceptance criteria. Refer to it when writing per-task agent prompts.
-- Per-task acceptance criteria need to be DERIVED for the agent prompt — the plan's task table is one row, but each task has implicit criteria from §2 success criteria and §3 architecture.
-- For learning-mode tasks (15 was flagged): defer until execute time and ask if user wants to hand-write before spawning. Task 8 + 14b are not learning-mode candidates.
+- User CLAUDE.md preferences: functional TS, Zod, "parse don't validate", oxlint+oxfmt, fastify. Concise tone; avoid over-explaining familiar tech.
+- Plan file in `.claude/kernel-outlines/` is source-of-truth for acceptance criteria.
+- Task 13 needs a design discussion BEFORE spawning (provenance threading approach).
+- Task 15 is a learning-mode candidate (diff design); ask user if they want to hand-write before spawning.
 - Use `AskUserQuestion` to gate every batch start, every review-fix decision, and every merge.
