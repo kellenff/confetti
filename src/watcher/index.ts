@@ -1,4 +1,3 @@
-import { realpath } from "node:fs/promises";
 import { getRuntime } from "../runtime/detect.js";
 import type { Runtime, Unwatch } from "../types.js";
 
@@ -47,12 +46,16 @@ export async function watchFile(
 
   let watchedPath = path;
   if (options.resolveSymlinks !== false) {
+    // Dynamic import keeps the watcher module loadable on edge runtimes
+    // (Cloudflare Workers without nodejs_compat) where `node:fs/promises`
+    // throws at module-eval. Failures here — including ENOENT, missing
+    // module, and revoked filesystem access — fall back to the original
+    // path so parent-dir watching still picks up later appearances.
     try {
-      watchedPath = await realpath(path);
+      const fs = await import("node:fs/promises");
+      watchedPath = await fs.realpath(path);
     } catch {
-      // File may not exist yet, or realpath may be unavailable on this
-      // runtime. Fall back to the original path; parent-dir watching will
-      // still pick up appearances.
+      // intentional: see comment above
     }
   }
 
