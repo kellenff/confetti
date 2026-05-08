@@ -29,15 +29,18 @@ export type SourceName =
   | "file"
   | "default"
   | "merged"
-  // eslint-disable-next-line @typescript-eslint/ban-types
   | (string & {});
 
-/** Standard precedence values for built-in source layers. */
+/**
+ * Standard precedence values keyed by SourceName.
+ * Keys match the singular SourceName union ('default', 'flag', not 'defaults', 'flags')
+ * so consumers can do StandardPriority[name] without translation.
+ */
 export const StandardPriority = {
-  defaults: 0,
+  default: 0,
   file: 25,
   env: 50,
-  flags: 75,
+  flag: 75,
   override: 100,
 } as const;
 
@@ -50,7 +53,7 @@ export interface Source {
 
   /**
    * Resolution order: higher priority wins on conflict.
-   * Standard layers: defaults=0, file=25, env=50, flags=75, override=100.
+   * Standard layers: default=0, file=25, env=50, flag=75, override=100.
    * Ties resolved by declaration order in defineConfig({ sources }).
    */
   readonly priority: number;
