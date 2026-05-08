@@ -882,3 +882,87 @@ describe("defineConfig: concurrent reload coalescing", () => {
     await config.close();
   });
 });
+
+describe("defineConfig: source.watch async startup failures route to onError", () => {
+  it("surfaces watchFile startup rejection through Config.onError(err, source.name)", async () => {
+    // A custom Source whose watch() schedules an async failure. Mirrors
+    // what fileSource does when watchFile rejects (e.g. runtime has no
+    // watchPath, or the resolved symlink target is missing).
+    const failingSource: import("./types.js").Source = {
+      name: "broken-source",
+      priority: 50,
+      read: () => Promise.resolve({ port: 3000 }),
+      watch(_notify, onError) {
+        queueMicrotask(() => {
+          onError?.(new Error("watch startup boom"));
+        });
+        return () => {};
+      },
+    };
+
+    const errors: Array<{ err: unknown; source: string }> = [];
+    const config = await defineConfig({
+      schema: z.object({ port: z.number() }),
+      sources: [failingSource],
+    });
+    config.onError((err, source) => {
+      errors.push({ err, source });
+    });
+
+    // Wait one microtask cycle for the queued failure to land.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    const captured = errors[0];
+    if (!captured) throw new Error("no captured error");
+    expect(captured.source).toBe("broken-source");
+    expect(captured.err).toBeInstanceOf(Error);
+    expect((captured.err as Error).message).toBe("watch startup boom");
+
+    await config.close();
+  });
+});
+
+describe("defineConfig: close() ordering", () => {
+  it("does not invoke onChange handlers for reloads completing during close()", async () => {
+    // Reload a few times normally, then call close() while a reload may
+    // still be in flight. We assert no onChange fires AFTER close() begins.
+    let resolveRead: (() => void) | null = null;
+    const gated: import("./types.js").Source = {
+      name: "gated",
+      priority: 50,
+      read: () =>
+        new Promise<unknown>((resolve) => {
+          // First call resolves immediately (initial load); subsequent
+          // calls wait on resolveRead so we can interleave with close().
+          if (!resolveRead) {
+            resolve({ port: 3000 });
+            resolveRead = () => {};
+            return;
+          }
+          resolveRead = () => resolve({ port: 4000 });
+        }),
+    };
+    const config = await defineConfig({
+      schema: z.object({ port: z.number() }),
+      sources: [gated],
+    });
+    const changes: number[] = [];
+    config.onChange((next) => {
+      changes.push((next as { port: number }).port);
+    });
+
+    // Start a reload but don't let it complete yet.
+    const reloadPromise = config.reload();
+    // Begin close (which awaits the inflight reload).
+    const closePromise = config.close();
+    // Now release the reload's read.
+    resolveRead?.();
+    await reloadPromise.catch(() => {});
+    await closePromise;
+
+    // Subscribers were cleared before the inflight resolved → no onChange.
+    expect(changes).toEqual([]);
+  });
+});

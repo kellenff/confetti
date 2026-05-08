@@ -86,7 +86,7 @@ export async function defineConfig<T extends z.ZodTypeAny>(
   walkSchema(options.schema);
 
   type Snapshot = z.output<T>;
-  const subs = new Subscribers<Snapshot>();
+  const subs = new Subscribers();
   let current: Snapshot = await runPipeline<T>(options);
   let closed = false;
   let inflight: Promise<Snapshot> | null = null;
@@ -95,20 +95,27 @@ export async function defineConfig<T extends z.ZodTypeAny>(
 
   // Wire watchers: for every source with `watch`, subscribe a notify
   // callback that triggers reload. The reload uses the standard reload()
-  // path so onChange + onError fire normally.
+  // path so onChange + onError fire normally. The second arg is an
+  // onError bridge so async startup failures from the source land in
+  // Config.onError(err, source.name) instead of being swallowed.
   for (const source of options.sources) {
     if (typeof source.watch === "function") {
       try {
-        const un = source.watch(() => {
-          if (closed) return;
-          // Fire-and-forget. Errors are already routed to onError inside
-          // triggerReload(); we don't want to surface them here.
-          void triggerReload().catch(() => {});
-        });
+        const un = source.watch(
+          () => {
+            if (closed) return;
+            // Fire-and-forget. Errors are already routed to onError inside
+            // triggerReload(); we don't want to surface them here.
+            void triggerReload().catch(() => {});
+          },
+          (err) => {
+            subs.notifyError(err, source.name);
+          },
+        );
         sourceUnwatches.push(un);
       } catch (err) {
-        // Source.watch failed at subscription time — route to onError
-        // with the source name and continue.
+        // Source.watch threw synchronously at subscription time — route
+        // to onError with the source name and continue.
         subs.notifyError(err, source.name);
       }
     }
@@ -141,18 +148,12 @@ export async function defineConfig<T extends z.ZodTypeAny>(
     try {
       next = await runPipeline<T>(options);
     } catch (err) {
-      // Schema-parse failure → AggregatedConfigError → onError with 'merged'.
-      // Source-read rejection → original error → attribute to source if we
-      // can identify it; otherwise 'merged' as a fallback.
-      if (err instanceof AggregatedConfigError) {
-        subs.notifyError(err, "merged");
-      } else {
-        // We can't tell which source rejected from outside Promise.all —
-        // best-effort attribution. The `runPipeline` helper rethrows the
-        // originating error, but we don't have its source label. Falls
-        // back to 'merged' to keep the contract typed.
-        subs.notifyError(err, "merged");
-      }
+      // Both schema-parse failure (AggregatedConfigError) and source-read
+      // rejection currently attribute to 'merged': from outside Promise.all
+      // we cannot tell which source's read() rejected. A future task could
+      // tag the Promise.all index back to source.name; for now we keep the
+      // attribution conservative.
+      subs.notifyError(err, "merged");
       throw err;
     }
     const before = current;
@@ -179,6 +180,20 @@ export async function defineConfig<T extends z.ZodTypeAny>(
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
+      // Drop subscribers FIRST so an in-flight reload that completes
+      // mid-teardown doesn't fire onChange after the user called close().
+      // Its notifyChange becomes a no-op against an empty handler list.
+      subs.clear();
+      // Wait for any in-flight reload to finish so close() resolves only
+      // after the pipeline is quiescent. Errors are swallowed — the
+      // inflight cycle already routed to (now-empty) onError.
+      if (inflight) {
+        try {
+          await inflight;
+        } catch {
+          // intentional: close must not throw
+        }
+      }
       // Tear down every source unwatcher in parallel. Errors are
       // swallowed — close() must be tolerant.
       const teardowns: Array<Promise<void>> = [];
@@ -194,7 +209,6 @@ export async function defineConfig<T extends z.ZodTypeAny>(
       }
       await Promise.all(teardowns);
       sourceUnwatches.length = 0;
-      subs.clear();
     },
   };
 
@@ -251,7 +265,7 @@ async function runPipeline<T extends z.ZodTypeAny>(
   // callers always see a single error type for validation failures.
   let parsed: z.output<T>;
   try {
-    parsed = options.schema.parse(merged) as z.output<T>;
+    parsed = options.schema.parse(merged);
   } catch (err) {
     if (err instanceof z.ZodError) {
       const issues: ConfigIssue[] = err.issues.map((issue) => {

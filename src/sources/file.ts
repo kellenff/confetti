@@ -103,15 +103,21 @@ export function fileSource(options: FileSourceOptions): Source {
         );
       }
     },
-    watch(notify: () => void): Unwatch {
+    watch(notify: () => void, onError?: (err: unknown) => void): Unwatch {
       // watchFile is async (it resolves symlinks and detects runtime), but
       // Source.watch is synchronous. We start the watcher eagerly and wrap
       // the eventual Unwatch in a closure that disposes once it resolves
       // (or queues a disposal flag if Unwatch lands first).
+      //
+      // reportError fans out to BOTH the user's watchOptions.onError (for
+      // fs-level diagnostics they explicitly asked for) AND the pipeline's
+      // onError (so a startup failure surfaces through Config.onError as
+      // (err, source.name) instead of being silently dropped).
       let disposed = false;
       let innerUnwatch: Unwatch | undefined;
-      const startError = (err: unknown) => {
+      const reportError = (err: unknown) => {
         watchOptions?.onError?.(err);
+        onError?.(err);
       };
       void watchFile(path, notify, {
         ...(watchOptions?.debounceMs !== undefined
@@ -120,29 +126,27 @@ export function fileSource(options: FileSourceOptions): Source {
         ...(watchOptions?.resolveSymlinks !== undefined
           ? { resolveSymlinks: watchOptions.resolveSymlinks }
           : {}),
-        ...(watchOptions?.onError !== undefined
-          ? { onError: watchOptions.onError }
-          : {}),
+        onError: reportError,
         ...(runtimeOverride !== undefined ? { runtime: runtimeOverride } : {}),
       })
         .then((un) => {
           if (disposed) {
             const r = un();
             if (r && typeof (r as Promise<void>).catch === "function") {
-              (r as Promise<void>).catch(startError);
+              (r as Promise<void>).catch(reportError);
             }
           } else {
             innerUnwatch = un;
           }
         })
-        .catch(startError);
+        .catch(reportError);
       return () => {
         disposed = true;
         if (innerUnwatch) {
           const r = innerUnwatch();
           innerUnwatch = undefined;
           if (r && typeof (r as Promise<void>).catch === "function") {
-            (r as Promise<void>).catch(startError);
+            (r as Promise<void>).catch(reportError);
           }
         }
       };

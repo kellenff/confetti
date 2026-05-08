@@ -68,8 +68,14 @@ export interface Source {
    * something changed, not what the merged-and-validated next snapshot looks
    * like. The pipeline owns the next/diff computation and dispatches via
    * its own `onChange` handlers.
+   *
+   * `onError`, when provided, is the pipeline's error-bridge for failures
+   * the source can't surface synchronously through the returned Unwatch —
+   * typically async startup failures (e.g. watchFile rejection). The
+   * pipeline routes these to its own onError(err, source.name) channel so
+   * users see them. Implementations MAY ignore the parameter.
    */
-  watch?(notify: () => void): Unwatch;
+  watch?(notify: () => void, onError?: (err: unknown) => void): Unwatch;
 
   /**
    * Per-source override of array merge policy.
