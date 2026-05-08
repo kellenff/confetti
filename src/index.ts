@@ -4,6 +4,9 @@
 export { defineConfig } from "./pipeline.js";
 export type { Config, DefineConfigOptions } from "./pipeline.js";
 
+// Diffing utility (exposed so users can compute diffs against snapshots)
+export { diff } from "./diff.js";
+
 // Sources
 export { overrideSource } from "./sources/override.js";
 export { defaultsSource } from "./sources/defaults.js";

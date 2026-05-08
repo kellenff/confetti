@@ -575,5 +575,394 @@ describe("public exports smoke", () => {
     expect(typeof mod.UnsupportedSchemaError).toBe("function");
     expect(typeof mod.isUnsupportedSchemaError).toBe("function");
     expect(typeof mod.StandardPriority).toBe("object");
+    expect(typeof mod.diff).toBe("function");
+  });
+});
+
+describe("defineConfig: programmatic reload", () => {
+  it("reload() re-runs sources and returns the new snapshot", async () => {
+    const schema = z.object({ port: z.number() });
+    let value = 3000;
+    const dynamic = {
+      name: "dynamic",
+      priority: 100,
+      read: () => Promise.resolve({ port: value }),
+    };
+    const config = await defineConfig({ schema, sources: [dynamic] });
+    expect(config.current.port).toBe(3000);
+    value = 8080;
+    const next = await config.reload();
+    expect(next.port).toBe(8080);
+    expect(config.current.port).toBe(8080);
+    await config.close();
+  });
+
+  it("reload() updates the current getter on success", async () => {
+    const schema = z.object({ key: z.string() });
+    let value = "first";
+    const config = await defineConfig({
+      schema,
+      sources: [
+        {
+          name: "test",
+          priority: 100,
+          read: () => Promise.resolve({ key: value }),
+        },
+      ],
+    });
+    expect(config.current.key).toBe("first");
+    value = "second";
+    await config.reload();
+    expect(config.current.key).toBe("second");
+    await config.close();
+  });
+});
+
+describe("defineConfig: onChange handler dispatch", () => {
+  it("invokes onChange handlers in registration order with diff", async () => {
+    const schema = z.object({ port: z.number() });
+    let value = 3000;
+    const config = await defineConfig({
+      schema,
+      sources: [
+        {
+          name: "test",
+          priority: 100,
+          read: () => Promise.resolve({ port: value }),
+        },
+      ],
+    });
+    const events: string[] = [];
+    let capturedDiff: unknown = null;
+    config.onChange((next, d) => {
+      events.push(`a:${(next as { port: number }).port}`);
+      capturedDiff = d;
+    });
+    config.onChange((next) => {
+      events.push(`b:${(next as { port: number }).port}`);
+    });
+    value = 8080;
+    await config.reload();
+    expect(events).toEqual(["a:8080", "b:8080"]);
+    expect(capturedDiff).toEqual([
+      { path: ["port"], before: 3000, after: 8080 },
+    ]);
+    await config.close();
+  });
+
+  it("handler throw is routed to onError(err, 'merged') and subsequent handlers still run", async () => {
+    const schema = z.object({ port: z.number() });
+    let value = 3000;
+    const config = await defineConfig({
+      schema,
+      sources: [
+        {
+          name: "test",
+          priority: 100,
+          read: () => Promise.resolve({ port: value }),
+        },
+      ],
+    });
+    const errs: Array<{ err: unknown; source: string }> = [];
+    const seen: string[] = [];
+    config.onError((err, source) => {
+      errs.push({ err, source });
+    });
+    config.onChange(() => {
+      throw new Error("handler-boom");
+    });
+    config.onChange(() => {
+      seen.push("after");
+    });
+    value = 8080;
+    await config.reload();
+    expect(seen).toEqual(["after"]);
+    expect(errs.length).toBe(1);
+    const first = errs[0];
+    expect(first).toBeDefined();
+    if (!first) return;
+    expect(first.source).toBe("merged");
+    expect((first.err as Error).message).toBe("handler-boom");
+    await config.close();
+  });
+});
+
+describe("defineConfig: reload schema-fail", () => {
+  it("throws AggregatedConfigError; current unchanged; onError fires with 'merged'", async () => {
+    const schema = z.object({ port: z.number() });
+    let value: unknown = 3000;
+    const config = await defineConfig({
+      schema,
+      sources: [
+        {
+          name: "test",
+          priority: 100,
+          read: () => Promise.resolve({ port: value }),
+        },
+      ],
+    });
+    const errs: Array<{ err: unknown; source: string }> = [];
+    const changes: number[] = [];
+    config.onError((err, source) => {
+      errs.push({ err, source });
+    });
+    config.onChange((next) => {
+      changes.push((next as { port: number }).port);
+    });
+    value = "not-a-number";
+    await expect(config.reload()).rejects.toBeInstanceOf(AggregatedConfigError);
+    // current is unchanged
+    expect(config.current.port).toBe(3000);
+    // onChange did NOT fire
+    expect(changes).toEqual([]);
+    // onError fired with 'merged'
+    expect(errs.length).toBe(1);
+    expect(errs[0]?.source).toBe("merged");
+    expect(errs[0]?.err).toBeInstanceOf(AggregatedConfigError);
+    await config.close();
+  });
+});
+
+describe("defineConfig: close + idempotency", () => {
+  it("close() unsubscribes; subsequent reload is a no-op returning current", async () => {
+    const schema = z.object({ port: z.number() });
+    let value = 3000;
+    const config = await defineConfig({
+      schema,
+      sources: [
+        {
+          name: "test",
+          priority: 100,
+          read: () => Promise.resolve({ port: value }),
+        },
+      ],
+    });
+    const changes: number[] = [];
+    config.onChange((next) => {
+      changes.push((next as { port: number }).port);
+    });
+    await config.close();
+    value = 8080;
+    const result = await config.reload();
+    // No reload happened; result is the snapshot at close time.
+    expect(result.port).toBe(3000);
+    expect(config.current.port).toBe(3000);
+    expect(changes).toEqual([]);
+  });
+
+  it("close() is idempotent", async () => {
+    const schema = z.object({ port: z.number() });
+    const config = await defineConfig({
+      schema,
+      sources: [overrideSource({ port: 3000 })],
+    });
+    await config.close();
+    await expect(config.close()).resolves.toBeUndefined();
+  });
+});
+
+describe("defineConfig: file watcher integration", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "confetti-pipeline-watch-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("file change triggers onChange with diff (real fs, debounced)", async () => {
+    const p = join(dir, "config.json");
+    await writeFile(p, JSON.stringify({ port: 3000 }), "utf8");
+    const schema = z.object({ port: z.number() });
+    const config = await defineConfig({
+      schema,
+      sources: [fileSource({ path: p, watch: { debounceMs: 30 } })],
+    });
+    expect(config.current.port).toBe(3000);
+
+    // Capture every onChange emission; filter for the one that reflects
+    // the new value. Real fs watchers can emit spurious events from earlier
+    // writes (parent-dir creation, atomic rename of the original write)
+    // that race with our test setup — those will arrive carrying the OLD
+    // port value, which we ignore.
+    const seen: Array<{ port: number }> = [];
+    let resolveChanged!: (next: { port: number }) => void;
+    const changed = new Promise<{ port: number }>((resolve) => {
+      resolveChanged = resolve;
+    });
+    config.onChange((next) => {
+      const snap = next as { port: number };
+      seen.push(snap);
+      if (snap.port === 8080) resolveChanged(snap);
+    });
+
+    // Give the async watcher subscription time to attach.
+    await new Promise((r) => setTimeout(r, 200));
+    await writeFile(p, JSON.stringify({ port: 8080 }), "utf8");
+    const next = await Promise.race([
+      changed,
+      new Promise<{ port: number }>((_, rej) =>
+        setTimeout(() => rej(new Error("timeout waiting for change")), 5000),
+      ),
+    ]);
+    expect(next.port).toBe(8080);
+    expect(config.current.port).toBe(8080);
+    await config.close();
+  });
+});
+
+describe("defineConfig: concurrent reload coalescing", () => {
+  it("concurrent reload() calls coalesce to a single in-flight + at most one pending", async () => {
+    const schema = z.object({ port: z.number() });
+    let runs = 0;
+    // After the initial load, every subsequent read() parks until the test
+    // pops a resolver off `pending`. The initial load resolves immediately
+    // so defineConfig() itself doesn't hang.
+    let initialDone = false;
+    const pending: Array<(v: { port: number }) => void> = [];
+    let value = 3000;
+    const config = await defineConfig({
+      schema,
+      sources: [
+        {
+          name: "slow",
+          priority: 100,
+          read: () =>
+            new Promise<{ port: number }>((resolve) => {
+              runs++;
+              const captured = value;
+              if (!initialDone) {
+                initialDone = true;
+                resolve({ port: captured });
+                return;
+              }
+              pending.push(() => resolve({ port: captured }));
+            }),
+        },
+      ],
+    });
+    expect(runs).toBe(1);
+    expect(pending.length).toBe(0);
+
+    // Fire 3 reloads back-to-back.
+    value = 4000;
+    const r1 = config.reload();
+    const r2 = config.reload();
+    const r3 = config.reload();
+
+    // Drain microtasks so triggerReload starts the first read().
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Exactly one read should be in flight.
+    expect(runs).toBe(2);
+    expect(pending.length).toBe(1);
+
+    // Resolve the first reload's read.
+    value = 5000;
+    pending.shift()!({ port: 4000 });
+
+    // Allow notifyChange to run + the coalescer to spawn the pending reload.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // A second (coalesced) reload should now be in flight.
+    expect(runs).toBe(3);
+    expect(pending.length).toBe(1);
+
+    // Resolve the second reload's read.
+    pending.shift()!({ port: 5000 });
+
+    const [n1, n2, n3] = await Promise.all([r1, r2, r3]);
+    // All three callers receive the SAME final snapshot (latest-wins).
+    expect(n1.port).toBe(5000);
+    expect(n2.port).toBe(5000);
+    expect(n3.port).toBe(5000);
+    // No 4th run.
+    expect(runs).toBe(3);
+    await config.close();
+  });
+});
+
+describe("defineConfig: source.watch async startup failures route to onError", () => {
+  it("surfaces watchFile startup rejection through Config.onError(err, source.name)", async () => {
+    // A custom Source whose watch() schedules an async failure. Mirrors
+    // what fileSource does when watchFile rejects (e.g. runtime has no
+    // watchPath, or the resolved symlink target is missing).
+    const failingSource: import("./types.js").Source = {
+      name: "broken-source",
+      priority: 50,
+      read: () => Promise.resolve({ port: 3000 }),
+      watch(_notify, onError) {
+        queueMicrotask(() => {
+          onError?.(new Error("watch startup boom"));
+        });
+        return () => {};
+      },
+    };
+
+    const errors: Array<{ err: unknown; source: string }> = [];
+    const config = await defineConfig({
+      schema: z.object({ port: z.number() }),
+      sources: [failingSource],
+    });
+    config.onError((err, source) => {
+      errors.push({ err, source });
+    });
+
+    // Wait one microtask cycle for the queued failure to land.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    const captured = errors[0];
+    if (!captured) throw new Error("no captured error");
+    expect(captured.source).toBe("broken-source");
+    expect(captured.err).toBeInstanceOf(Error);
+    expect((captured.err as Error).message).toBe("watch startup boom");
+
+    await config.close();
+  });
+});
+
+describe("defineConfig: close() ordering", () => {
+  it("does not invoke onChange handlers for reloads completing during close()", async () => {
+    // Reload a few times normally, then call close() while a reload may
+    // still be in flight. We assert no onChange fires AFTER close() begins.
+    let resolveRead: (() => void) | null = null;
+    const gated: import("./types.js").Source = {
+      name: "gated",
+      priority: 50,
+      read: () =>
+        new Promise<unknown>((resolve) => {
+          // First call resolves immediately (initial load); subsequent
+          // calls wait on resolveRead so we can interleave with close().
+          if (!resolveRead) {
+            resolve({ port: 3000 });
+            resolveRead = () => {};
+            return;
+          }
+          resolveRead = () => resolve({ port: 4000 });
+        }),
+    };
+    const config = await defineConfig({
+      schema: z.object({ port: z.number() }),
+      sources: [gated],
+    });
+    const changes: number[] = [];
+    config.onChange((next) => {
+      changes.push((next as { port: number }).port);
+    });
+
+    // Start a reload but don't let it complete yet.
+    const reloadPromise = config.reload();
+    // Begin close (which awaits the inflight reload).
+    const closePromise = config.close();
+    // Now release the reload's read.
+    resolveRead?.();
+    await reloadPromise.catch(() => {});
+    await closePromise;
+
+    // Subscribers were cleared before the inflight resolved → no onChange.
+    expect(changes).toEqual([]);
   });
 });
