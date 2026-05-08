@@ -29,6 +29,9 @@ export interface EnvSourceOptions {
   /**
    * Optional. When true, console.warn lists env vars matching the prefix that
    * aren't in the derived schema keys. Default: process.env.NODE_ENV !== 'production'.
+   *
+   * Has no effect when `prefix` is empty (the default), since unprefixed env
+   * vars cannot be distinguished from unrelated environment state.
    */
   readonly warnOnUnknown?: boolean;
 }

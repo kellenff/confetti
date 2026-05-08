@@ -52,6 +52,11 @@ export type ErrorHandler = (err: unknown, source: SourceName) => void;
  * - `before` and `after` capture the old and new values at that path.
  *   Either may be `undefined` to represent an added or removed key.
  * - Arrays are compared as wholes — see {@link diff} for full semantics.
+ *
+ * Path-encoding caveat: segments are reported verbatim. Consumers that
+ * compare via `path.join('.')` should be aware that schema keys
+ * containing literal dots (e.g. a field named `"a.b"`) collide with
+ * the nested path `a -> b`. v0.1 does not address this.
  */
 export type ConfigDiff = ReadonlyArray<{
   /** Segment path from the snapshot root to the changed node. Empty = root. */
