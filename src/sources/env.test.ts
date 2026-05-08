@@ -41,6 +41,28 @@ describe("envSource", () => {
     expect(await src.read()).toEqual({ name: "alice" });
   });
 
+  it("accepts empty string as a valid string value", async () => {
+    const schema = z.object({ note: z.string() });
+    const src = envSource({
+      schema,
+      prefix: "APP_",
+      runtime: fakeRuntime({ APP_NOTE: "" }),
+      warnOnUnknown: false,
+    });
+    expect(await src.read()).toEqual({ note: "" });
+  });
+
+  it("trims surrounding whitespace before coercing booleans", async () => {
+    const schema = z.object({ flag: z.boolean() });
+    const src = envSource({
+      schema,
+      prefix: "APP_",
+      runtime: fakeRuntime({ APP_FLAG: "  true  " }),
+      warnOnUnknown: false,
+    });
+    expect(await src.read()).toEqual({ flag: true });
+  });
+
   it("coerces numbers from strings", async () => {
     const schema = z.object({ port: z.number() });
     const src = envSource({

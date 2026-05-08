@@ -60,7 +60,9 @@ function coercePrimitive(
       return { ok: true, value: n };
     }
     case "boolean": {
-      const lower = raw.toLowerCase();
+      // Trim to match number's tolerance: APP_FLAG='true ' is reasonable
+      // shell behaviour and shouldn't fail the way 'maybe' does.
+      const lower = raw.trim().toLowerCase();
       if (TRUE_FORMS.has(lower)) return { ok: true, value: true };
       if (FALSE_FORMS.has(lower)) return { ok: true, value: false };
       return {
