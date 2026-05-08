@@ -13,14 +13,63 @@ import { type SchemaLeaf, walkSchema } from "./walker.js";
  * fail loudly here rather than silently produce wrong leaves at runtime.
  */
 describe("Zod runtime classes (load-bearing assumption)", () => {
-  it("exposes ZodString as a runtime class", () => {
-    expect(z.string()).toBeInstanceOf(z.ZodString);
-  });
-  it("exposes ZodObject as a runtime class", () => {
-    expect(z.object({})).toBeInstanceOf(z.ZodObject);
-  });
-  it("exposes ZodArray as a runtime class", () => {
-    expect(z.array(z.string())).toBeInstanceOf(z.ZodArray);
+  // Every runtime class the walker uses with `instanceof`. If a Zod minor
+  // version renames or restructures any of these, this suite fails first
+  // — before the walker silently falls through to 'unrecognized'.
+  it.each<[string, () => unknown, new (...args: never[]) => unknown]>([
+    ["ZodString", () => z.string(), z.ZodString],
+    ["ZodNumber", () => z.number(), z.ZodNumber],
+    ["ZodBoolean", () => z.boolean(), z.ZodBoolean],
+    ["ZodObject", () => z.object({}), z.ZodObject],
+    ["ZodArray", () => z.array(z.string()), z.ZodArray],
+    ["ZodOptional", () => z.string().optional(), z.ZodOptional],
+    ["ZodDefault", () => z.string().default("x"), z.ZodDefault],
+    ["ZodEnum", () => z.enum(["a"]), z.ZodEnum],
+    ["ZodNativeEnum", () => z.nativeEnum({ A: "a" } as const), z.ZodNativeEnum],
+    ["ZodLiteral", () => z.literal("x"), z.ZodLiteral],
+    ["ZodUnion", () => z.union([z.string(), z.number()]), z.ZodUnion],
+    [
+      "ZodEffects (transform)",
+      () => z.string().transform((s) => s),
+      z.ZodEffects,
+    ],
+    ["ZodEffects (refine)", () => z.string().refine(() => true), z.ZodEffects],
+    ["ZodCatch", () => z.string().catch("x"), z.ZodCatch],
+    ["ZodPipeline", () => z.string().pipe(z.string()), z.ZodPipeline],
+    ["ZodBranded", () => z.string().brand<"X">(), z.ZodBranded],
+    ["ZodLazy", () => z.lazy(() => z.string()), z.ZodLazy],
+    [
+      "ZodIntersection",
+      () => z.intersection(z.string(), z.string()),
+      z.ZodIntersection,
+    ],
+    ["ZodRecord", () => z.record(z.string()), z.ZodRecord],
+    [
+      "ZodDiscriminatedUnion",
+      () =>
+        z.discriminatedUnion("k", [
+          z.object({ k: z.literal("a") }),
+          z.object({ k: z.literal("b") }),
+        ]),
+      z.ZodDiscriminatedUnion,
+    ],
+    ["ZodTuple", () => z.tuple([z.string()]), z.ZodTuple],
+    ["ZodMap", () => z.map(z.string(), z.string()), z.ZodMap],
+    ["ZodSet", () => z.set(z.string()), z.ZodSet],
+    ["ZodFunction", () => z.function(), z.ZodFunction],
+    ["ZodPromise", () => z.promise(z.string()), z.ZodPromise],
+    ["ZodNaN", () => z.nan(), z.ZodNaN],
+    ["ZodBigInt", () => z.bigint(), z.ZodBigInt],
+    ["ZodDate", () => z.date(), z.ZodDate],
+    ["ZodSymbol", () => z.symbol(), z.ZodSymbol],
+    ["ZodAny", () => z.any(), z.ZodAny],
+    ["ZodUnknown", () => z.unknown(), z.ZodUnknown],
+    ["ZodNever", () => z.never(), z.ZodNever],
+    ["ZodVoid", () => z.void(), z.ZodVoid],
+    ["ZodNull", () => z.null(), z.ZodNull],
+    ["ZodUndefined", () => z.undefined(), z.ZodUndefined],
+  ])("exposes %s as a runtime class", (_name, build, Class) => {
+    expect(build()).toBeInstanceOf(Class);
   });
 });
 
@@ -109,6 +158,45 @@ describe("walkSchema — supported constructs", () => {
     });
   });
 
+  it("default optional (reverse wrapper order) also propagates both flags", () => {
+    const schema = z.object({
+      port: z.number().default(3000).optional(),
+    });
+    const leaves = walkSchema(schema);
+    // .optional() is the outer wrapper here, default is inner.
+    expect(leaves[0]).toMatchObject({
+      path: ["port"],
+      inputType: "number",
+      hasDefault: true,
+      optional: true,
+    });
+  });
+
+  it("optional sub-object: state intentionally resets at object boundary", () => {
+    // Documented behaviour: object-level optional/default does NOT propagate
+    // to children. Each leaf inside still owns its own optional/default
+    // flags. envSource cares about per-leaf required-ness, not container.
+    const schema = z.object({
+      db: z
+        .object({ url: z.string(), pool: z.number().default(10) })
+        .optional(),
+    });
+    const leaves = walkSchema(schema);
+    expect(leaves).toHaveLength(2);
+    expect(leaves).toContainEqual<SchemaLeaf>({
+      path: ["db", "url"],
+      inputType: "string",
+      optional: false,
+      hasDefault: false,
+    });
+    expect(leaves).toContainEqual<SchemaLeaf>({
+      path: ["db", "pool"],
+      inputType: "number",
+      optional: false,
+      hasDefault: true,
+    });
+  });
+
   it("enum produces enum leaf with values", () => {
     const schema = z.object({ env: z.enum(["dev", "prod"]) });
     const leaves = walkSchema(schema);
@@ -181,6 +269,40 @@ describe("walkSchema — supported constructs", () => {
       inputType: "array",
       itemType: "enum",
     });
+  });
+
+  it("array of enum carries itemValues", () => {
+    const schema = z.object({ flags: z.array(z.enum(["x", "y", "z"])) });
+    const leaves = walkSchema(schema);
+    expect(leaves[0]?.itemValues).toEqual(["x", "y", "z"]);
+  });
+
+  it("array of literal carries itemValues", () => {
+    const schema = z.object({ kinds: z.array(z.literal("singleton")) });
+    const leaves = walkSchema(schema);
+    expect(leaves[0]).toMatchObject({
+      inputType: "array",
+      itemType: "literal",
+    });
+    expect(leaves[0]?.itemValues).toEqual(["singleton"]);
+  });
+
+  it("array of literal-union carries itemValues", () => {
+    const schema = z.object({
+      modes: z.array(z.union([z.literal("a"), z.literal("b")])),
+    });
+    const leaves = walkSchema(schema);
+    expect(leaves[0]).toMatchObject({
+      inputType: "array",
+      itemType: "enum",
+    });
+    expect(leaves[0]?.itemValues).toEqual(["a", "b"]);
+  });
+
+  it("array of string has no itemValues", () => {
+    const schema = z.object({ tags: z.array(z.string()) });
+    const leaves = walkSchema(schema);
+    expect(leaves[0]?.itemValues).toBeUndefined();
   });
 });
 
@@ -278,6 +400,25 @@ describe("walkSchema — refused constructs", () => {
     const err = catchUnsupported(() => walkSchema(schema));
     expect(err.reason).toBe("unrecognized");
     expect(err.path).toEqual(["grid"]);
+  });
+
+  it("refuses mixed-scalar literal union (string + number)", () => {
+    // Env coercion of "1" against ['a', 1] is ambiguous; refuse loudly.
+    const schema = z.object({
+      v: z.union([z.literal("a"), z.literal(1)]),
+    });
+    const err = catchUnsupported(() => walkSchema(schema));
+    expect(err.reason).toBe("nonLiteralUnion");
+    expect(err.schemaTypeName).toContain("mixed-scalar-types");
+  });
+
+  it("refuses array of mixed-scalar literal union", () => {
+    const schema = z.object({
+      v: z.array(z.union([z.literal("a"), z.literal(1)])),
+    });
+    const err = catchUnsupported(() => walkSchema(schema));
+    expect(err.reason).toBe("nonLiteralUnion");
+    expect(err.schemaTypeName).toContain("mixed-scalar-types");
   });
 });
 

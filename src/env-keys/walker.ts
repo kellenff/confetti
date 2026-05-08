@@ -49,6 +49,13 @@ export interface SchemaLeaf {
   readonly values?: readonly (string | number | boolean)[];
   /** For array leaves: the item type (only set when inputType === 'array'). */
   readonly itemType?: Exclude<SchemaLeafType, "array">;
+  /**
+   * For array-of-enum / array-of-literal / array-of-literal-union: the
+   * allowed values for each array item. Mirrors `values` but applies
+   * per-element rather than per-leaf. Set only when itemType is
+   * 'enum' or 'literal'.
+   */
+  readonly itemValues?: readonly (string | number | boolean)[];
 }
 
 /**
@@ -82,12 +89,10 @@ interface UnwrapState {
  * not load-bearing.
  */
 function refuse(
-  schema: z.ZodTypeAny,
   path: readonly string[],
   reason: UnsupportedSchemaReason,
   schemaTypeName: string,
 ): never {
-  void schema;
   throw new UnsupportedSchemaError({ path, reason, schemaTypeName });
 }
 
@@ -130,98 +135,98 @@ function walk(
       typeof effectType === "string"
         ? `ZodEffects(${effectType})`
         : "ZodEffects";
-    refuse(schema, path, "transform", typeName);
+    refuse(path, "transform", typeName);
   }
 
   if (schema instanceof z.ZodCatch) {
-    refuse(schema, path, "catch", "ZodCatch");
+    refuse(path, "catch", "ZodCatch");
   }
 
   if (schema instanceof z.ZodPipeline) {
-    refuse(schema, path, "pipe", "ZodPipeline");
+    refuse(path, "pipe", "ZodPipeline");
   }
 
   if (schema instanceof z.ZodBranded) {
-    refuse(schema, path, "brand", "ZodBranded");
+    refuse(path, "brand", "ZodBranded");
   }
 
   if (schema instanceof z.ZodLazy) {
-    refuse(schema, path, "lazy", "ZodLazy");
+    refuse(path, "lazy", "ZodLazy");
   }
 
   if (schema instanceof z.ZodIntersection) {
-    refuse(schema, path, "intersection", "ZodIntersection");
+    refuse(path, "intersection", "ZodIntersection");
   }
 
   if (schema instanceof z.ZodRecord) {
-    refuse(schema, path, "record", "ZodRecord");
+    refuse(path, "record", "ZodRecord");
   }
 
   if (schema instanceof z.ZodDiscriminatedUnion) {
-    refuse(schema, path, "discriminatedUnion", "ZodDiscriminatedUnion");
+    refuse(path, "discriminatedUnion", "ZodDiscriminatedUnion");
   }
 
   if (schema instanceof z.ZodTuple) {
-    refuse(schema, path, "tuple", "ZodTuple");
+    refuse(path, "tuple", "ZodTuple");
   }
 
   if (schema instanceof z.ZodMap) {
-    refuse(schema, path, "map", "ZodMap");
+    refuse(path, "map", "ZodMap");
   }
 
   if (schema instanceof z.ZodSet) {
-    refuse(schema, path, "set", "ZodSet");
+    refuse(path, "set", "ZodSet");
   }
 
   if (schema instanceof z.ZodFunction) {
-    refuse(schema, path, "function", "ZodFunction");
+    refuse(path, "function", "ZodFunction");
   }
 
   if (schema instanceof z.ZodPromise) {
-    refuse(schema, path, "promise", "ZodPromise");
+    refuse(path, "promise", "ZodPromise");
   }
 
   if (schema instanceof z.ZodNaN) {
-    refuse(schema, path, "nan", "ZodNaN");
+    refuse(path, "nan", "ZodNaN");
   }
 
   if (schema instanceof z.ZodBigInt) {
-    refuse(schema, path, "bigint", "ZodBigInt");
+    refuse(path, "bigint", "ZodBigInt");
   }
 
   if (schema instanceof z.ZodDate) {
-    refuse(schema, path, "date", "ZodDate");
+    refuse(path, "date", "ZodDate");
   }
 
   if (schema instanceof z.ZodSymbol) {
-    refuse(schema, path, "symbol", "ZodSymbol");
+    refuse(path, "symbol", "ZodSymbol");
   }
 
   if (schema instanceof z.ZodAny) {
-    refuse(schema, path, "any", "ZodAny");
+    refuse(path, "any", "ZodAny");
   }
 
   if (schema instanceof z.ZodUnknown) {
-    refuse(schema, path, "unknown", "ZodUnknown");
+    refuse(path, "unknown", "ZodUnknown");
   }
 
   if (schema instanceof z.ZodNever) {
-    refuse(schema, path, "never", "ZodNever");
+    refuse(path, "never", "ZodNever");
   }
 
   if (schema instanceof z.ZodVoid) {
-    refuse(schema, path, "void", "ZodVoid");
+    refuse(path, "void", "ZodVoid");
   }
 
   if (schema instanceof z.ZodNull) {
     // ZodNull alone is unrepresentable in env. .nullable() is unsupported in
     // v0.1 (see README), but if/when it lands it will unwrap before reaching
     // here, so this branch only catches a bare z.null() at a leaf.
-    refuse(schema, path, "null", "ZodNull");
+    refuse(path, "null", "ZodNull");
   }
 
   if (schema instanceof z.ZodUndefined) {
-    refuse(schema, path, "undefined", "ZodUndefined");
+    refuse(path, "undefined", "ZodUndefined");
   }
 
   // ---------------------------------------------------------------
@@ -245,7 +250,7 @@ function walk(
       ).shape?.();
 
     if (shapeRaw === undefined || shapeRaw === null) {
-      refuse(schema, path, "unrecognized", "ZodObject(no-shape)");
+      refuse(path, "unrecognized", "ZodObject(no-shape)");
     }
 
     const shape = shapeRaw as Record<string, z.ZodTypeAny>;
@@ -255,6 +260,11 @@ function walk(
         // Defensive: noUncheckedIndexedAccess makes this required.
         continue;
       }
+      // State reset is intentional: object-level optional/default does not
+      // propagate to children for env-coercion purposes. An "optional
+      // sub-object" only means the *whole branch* may be absent; each leaf
+      // inside still owns its own optional/default flags. envSource cares
+      // about per-leaf required-ness, not container-level.
       walk(child, [...path, key], { optional: false, hasDefault: false }, out);
     }
     return;
@@ -265,13 +275,14 @@ function walk(
   // ---------------------------------------------------------------
 
   if (schema instanceof z.ZodArray) {
-    const itemType = describePrimitive(schema.element, path);
+    const desc = describePrimitive(schema.element, path);
     out.push({
       path,
       inputType: "array",
       optional: state.optional,
       hasDefault: state.hasDefault,
-      itemType,
+      itemType: desc.itemType,
+      ...(desc.itemValues !== undefined ? { itemValues: desc.itemValues } : {}),
     });
     return;
   }
@@ -322,7 +333,7 @@ function walk(
     ) {
       // null/undefined/symbol/object literals are not representable as env
       // scalars. Refuse explicitly rather than silently coercing.
-      refuse(schema, path, "unrecognized", "ZodLiteral(non-scalar)");
+      refuse(path, "unrecognized", "ZodLiteral(non-scalar)");
     }
     out.push({
       path,
@@ -345,9 +356,10 @@ function walk(
     ).options;
     const allLiterals = options.every((opt) => opt instanceof z.ZodLiteral);
     if (!allLiterals) {
-      refuse(schema, path, "nonLiteralUnion", "ZodUnion");
+      refuse(path, "nonLiteralUnion", "ZodUnion");
     }
     const values: (string | number | boolean)[] = [];
+    let firstScalarType: "string" | "number" | "boolean" | undefined;
     for (const opt of options) {
       const v = (opt as z.ZodLiteral<unknown>).value;
       if (
@@ -355,7 +367,15 @@ function walk(
         typeof v !== "number" &&
         typeof v !== "boolean"
       ) {
-        refuse(schema, path, "nonLiteralUnion", "ZodUnion(non-scalar-literal)");
+        refuse(path, "nonLiteralUnion", "ZodUnion(non-scalar-literal)");
+      }
+      // Refuse mixed scalar types in a literal union — env coercion of "1"
+      // against `['a', 1]` is ambiguous, and this case is rare enough that
+      // raising loud is better than guessing.
+      if (firstScalarType === undefined) {
+        firstScalarType = typeof v as "string" | "number" | "boolean";
+      } else if (typeof v !== firstScalarType) {
+        refuse(path, "nonLiteralUnion", "ZodUnion(mixed-scalar-types)");
       }
       values.push(v);
     }
@@ -410,7 +430,7 @@ function walk(
   const ctorName =
     (schema as { constructor?: { name?: string } }).constructor?.name ??
     "UnknownZodNode";
-  refuse(schema, path, "unrecognized", ctorName);
+  refuse(path, "unrecognized", ctorName);
 }
 
 /**
@@ -422,22 +442,80 @@ function walk(
  * inside an array element for env coercion, so we don't unwrap them here;
  * we only inspect the surface type.
  */
+interface ItemDescriptor {
+  itemType: Exclude<SchemaLeafType, "array">;
+  itemValues?: readonly (string | number | boolean)[];
+}
+
 function describePrimitive(
   element: z.ZodTypeAny,
   path: readonly string[],
-): Exclude<SchemaLeafType, "array"> {
-  if (element instanceof z.ZodString) return "string";
-  if (element instanceof z.ZodNumber) return "number";
-  if (element instanceof z.ZodBoolean) return "boolean";
-  if (element instanceof z.ZodEnum) return "enum";
-  if (element instanceof z.ZodNativeEnum) return "enum";
-  if (element instanceof z.ZodLiteral) return "literal";
+): ItemDescriptor {
+  if (element instanceof z.ZodString) return { itemType: "string" };
+  if (element instanceof z.ZodNumber) return { itemType: "number" };
+  if (element instanceof z.ZodBoolean) return { itemType: "boolean" };
+  if (element instanceof z.ZodEnum) {
+    return {
+      itemType: "enum",
+      itemValues: element.options as readonly string[],
+    };
+  }
+  if (element instanceof z.ZodNativeEnum) {
+    const enumObj = (element as { enum: Record<string, string | number> }).enum;
+    const itemValues = Object.values(enumObj).filter(
+      (v): v is string | number =>
+        typeof v === "string" || typeof v === "number",
+    );
+    return { itemType: "enum", itemValues };
+  }
+  if (element instanceof z.ZodLiteral) {
+    const value = (element as z.ZodLiteral<unknown>).value;
+    if (
+      typeof value !== "string" &&
+      typeof value !== "number" &&
+      typeof value !== "boolean"
+    ) {
+      throw new UnsupportedSchemaError({
+        path,
+        reason: "unrecognized",
+        schemaTypeName: "ZodArray(element=ZodLiteral(non-scalar))",
+      });
+    }
+    return { itemType: "literal", itemValues: [value] };
+  }
   if (element instanceof z.ZodUnion) {
-    // All-literal union inside an array: treat as enum-typed item.
     const options = (
       element as z.ZodUnion<readonly [z.ZodTypeAny, ...z.ZodTypeAny[]]>
     ).options;
-    if (options.every((o) => o instanceof z.ZodLiteral)) return "enum";
+    if (options.every((o) => o instanceof z.ZodLiteral)) {
+      const itemValues: (string | number | boolean)[] = [];
+      let firstScalarType: "string" | "number" | "boolean" | undefined;
+      for (const opt of options) {
+        const v = (opt as z.ZodLiteral<unknown>).value;
+        if (
+          typeof v !== "string" &&
+          typeof v !== "number" &&
+          typeof v !== "boolean"
+        ) {
+          throw new UnsupportedSchemaError({
+            path,
+            reason: "nonLiteralUnion",
+            schemaTypeName: "ZodArray(element=ZodUnion(non-scalar-literal))",
+          });
+        }
+        if (firstScalarType === undefined) {
+          firstScalarType = typeof v as "string" | "number" | "boolean";
+        } else if (typeof v !== firstScalarType) {
+          throw new UnsupportedSchemaError({
+            path,
+            reason: "nonLiteralUnion",
+            schemaTypeName: "ZodArray(element=ZodUnion(mixed-scalar-types))",
+          });
+        }
+        itemValues.push(v);
+      }
+      return { itemType: "enum", itemValues };
+    }
   }
   const ctorName =
     (element as { constructor?: { name?: string } }).constructor?.name ??
