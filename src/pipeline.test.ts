@@ -203,6 +203,12 @@ describe("defineConfig: frozen result (SC1)", () => {
     });
     expect(Object.isFrozen(result.current.tags)).toBe(true);
   });
+
+  // The class-instance branch in deepFreeze (Date/Map/Set/user classes) is
+  // unreachable through the v0.1 supported schema set — z.date(), z.unknown(),
+  // z.any() etc. are all rejected by the walker. The guard exists as
+  // defensive code for future schema types; testing it would require either
+  // exporting deepFreeze or introducing an unsupported construct.
 });
 
 describe("defineConfig: type narrowing (SC1)", () => {

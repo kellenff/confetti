@@ -123,16 +123,15 @@ export async function defineConfig<T extends z.ZodTypeAny>(
   }
 
   // 7. Recursive freeze and return.
-  const frozen = deepFreeze(parsed) as z.output<T>;
-  return { current: frozen };
+  return { current: deepFreeze(parsed) };
 }
 
 /**
  * Recursively freeze plain objects and arrays in-place. Returns the
- * same reference. Skips primitives and already-frozen / non-extensible
- * values (including class instances we might not own).
+ * same reference (typed identically). Skips primitives and already-frozen
+ * / non-extensible values (including class instances we might not own).
  */
-function deepFreeze(value: unknown): unknown {
+function deepFreeze<U>(value: U): U {
   if (value === null || typeof value !== "object") return value;
   if (Object.isFrozen(value)) return value;
   if (Array.isArray(value)) {
