@@ -1,17 +1,21 @@
 import type { Parser } from "../types.js";
 
-/**
- * Lazy YAML parser. The first call to `loadYamlParser()` dynamically
- * imports the `yaml` package; subsequent calls return the cached parser
- * instance built around the already-imported module.
- *
- * Use this when dynamic imports are allowed (Node, modern bundlers that
- * preserve `import()`). For CSP-strict environments such as Cloudflare
- * Workers or strict-ESM contexts where dynamic imports are disallowed,
- * import `yamlStaticParser` from `./yaml-static.js` instead.
- */
 let cachedParser: Parser | undefined;
 
+/**
+ * Lazily load a YAML {@link Parser}.
+ *
+ * The first call dynamically imports the `yaml` peer dependency;
+ * subsequent calls return the cached parser instance.
+ *
+ * Use this when dynamic imports are allowed (Node, Deno, Bun, modern
+ * bundlers that preserve `import()`). For CSP-strict environments such
+ * as Cloudflare Workers or strict-ESM contexts where dynamic imports
+ * are disallowed, import `yamlStaticParser` from `./yaml-static.js`
+ * instead.
+ *
+ * @returns A `Parser` registered for the `yaml` and `yml` extensions.
+ */
 export async function loadYamlParser(): Promise<Parser> {
   if (cachedParser) return cachedParser;
   const yamlMod = await import("yaml");

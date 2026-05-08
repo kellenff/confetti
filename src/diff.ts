@@ -3,19 +3,27 @@ import type { ConfigDiff } from "./types.js";
 /**
  * Compute a structural difference between two config snapshots.
  *
- * Algorithm:
- *   - Primitives (or null) compared with `===`. Different → one entry at this path.
- *   - Arrays compared as wholes. Different (by length OR any index-wise inequality)
- *     → one entry carrying the entire arrays. We deliberately avoid per-index
- *     emission so that downstream consumers don't see a diff explosion when
- *     a long array is replaced or a new element is appended.
- *   - Plain objects: recursed key-by-key. Added keys emit `before: undefined`,
- *     removed keys emit `after: undefined`.
- *   - Type-mismatch (object↔primitive, object↔array, array↔primitive) at a
- *     path: ONE entry at that path; we do NOT recurse into the structured side.
+ * Useful for comparing arbitrary snapshots from your application code —
+ * the same routine is used internally to build the `diff` argument
+ * passed to {@link ReloadHandler}.
  *
- * Output order is sorted lexicographically by `path.join('.')` so tests can
- * assert deterministically.
+ * @param before - The earlier snapshot.
+ * @param after - The later snapshot.
+ * @returns A {@link ConfigDiff} — array of entries, one per logical
+ *   change, sorted lexicographically by `path.join('.')`.
+ *
+ * Algorithm:
+ *
+ * - **Primitives** (and `null`) are compared with `===`. A difference
+ *   yields one entry at this path.
+ * - **Arrays** are compared as wholes. Any difference (by length OR any
+ *   index-wise inequality) yields one entry carrying the entire arrays.
+ *   Per-index emission is deliberately avoided to prevent diff
+ *   explosions when a long array is replaced or appended to.
+ * - **Plain objects** are recursed key-by-key. Added keys emit
+ *   `before: undefined`; removed keys emit `after: undefined`.
+ * - **Type-mismatch** (object↔primitive, object↔array, array↔primitive):
+ *   one entry at that path with no recursion into the structured side.
  */
 export function diff(before: unknown, after: unknown): ConfigDiff {
   const entries: Array<{
