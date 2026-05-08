@@ -94,13 +94,17 @@ export async function defineConfig<T extends z.ZodTypeAny>(
     if (entry.value === undefined) continue;
     const layer: MergeLayer =
       entry.source.arrayMerge !== undefined
-        ? { value: entry.value, arrayMerge: entry.source.arrayMerge }
-        : { value: entry.value };
+        ? {
+            value: entry.value,
+            arrayMerge: entry.source.arrayMerge,
+            source: entry.source.name,
+          }
+        : { value: entry.value, source: entry.source.name };
     layers.push(layer);
   }
 
   // 5. Deep-merge.
-  const merged = deepMerge(layers);
+  const { value: merged, provenance } = deepMerge(layers);
 
   // 6. Schema-validate. Wrap ZodError into AggregatedConfigError so
   //    callers always see a single error type for validation failures.
@@ -109,14 +113,20 @@ export async function defineConfig<T extends z.ZodTypeAny>(
     parsed = options.schema.parse(merged) as z.output<T>;
   } catch (err) {
     if (err instanceof z.ZodError) {
-      const issues: ConfigIssue[] = err.issues.map((issue) => ({
-        path: issue.path.map(String),
-        message: issue.message,
-        // Task 13 will refine source attribution back to the contributing
-        // layer. For task 12 every schema-validation issue is 'merged'.
-        source: "merged",
-        code: issue.code,
-      }));
+      const issues: ConfigIssue[] = err.issues.map((issue) => {
+        const path = issue.path.map(String);
+        const key = path.join(".");
+        // Look up the contributing source. Falls back to 'merged' for
+        // structural failures (absent required keys, type-mismatch at an
+        // object boundary) where no leaf was ever written by any layer.
+        const source = provenance.get(key) ?? "merged";
+        return {
+          path,
+          message: issue.message,
+          source,
+          code: issue.code,
+        };
+      });
       throw new AggregatedConfigError(issues, { cause: err });
     }
     throw err;

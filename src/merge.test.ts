@@ -1,5 +1,31 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { deepMerge, type MergeLayer } from "./merge.js";
+import {
+  deepMerge as deepMergeRaw,
+  type MergeLayer,
+  type MergeResult,
+} from "./merge.js";
+import type { SourceName } from "./types.js";
+
+/**
+ * Test-local wrapper: most existing tests pass layers without a `source`
+ * because they predate provenance tracking. Default to a stable name so
+ * we don't have to touch ~30 call sites that don't care about provenance.
+ */
+type LooseLayer = Omit<MergeLayer, "source"> & { source?: SourceName };
+function deepMerge(layers: readonly LooseLayer[]): unknown {
+  const filled: MergeLayer[] = layers.map((l, i) => ({
+    ...l,
+    source: l.source ?? `test-${i}`,
+  }));
+  return deepMergeRaw(filled).value;
+}
+function deepMergeFull(layers: readonly LooseLayer[]): MergeResult {
+  const filled: MergeLayer[] = layers.map((l, i) => ({
+    ...l,
+    source: l.source ?? `test-${i}`,
+  }));
+  return deepMergeRaw(filled);
+}
 
 // Helper: snapshot Object.prototype keys to ensure no pollution leaked.
 function prototypeKeysSnapshot(): string[] {
@@ -395,7 +421,7 @@ describe("deepMerge — plain object discrimination", () => {
 
 describe("deepMerge — many-layer realistic scenario", () => {
   it("merges default → file → env → flag → override", () => {
-    const defaults: MergeLayer = {
+    const defaults: LooseLayer = {
       value: {
         server: { host: "0.0.0.0", port: 8080 },
         log: { level: "info", format: "text" },
@@ -403,25 +429,25 @@ describe("deepMerge — many-layer realistic scenario", () => {
         tags: ["default"],
       },
     };
-    const file: MergeLayer = {
+    const file: LooseLayer = {
       value: {
         server: { port: 9090 },
         log: { format: "json" },
         tags: ["file-a", "file-b"],
       },
     };
-    const env: MergeLayer = {
+    const env: LooseLayer = {
       value: {
         server: { host: "127.0.0.1" },
         log: { level: undefined },
       },
     };
-    const flag: MergeLayer = {
+    const flag: LooseLayer = {
       value: {
         features: { beta: true },
       },
     };
-    const override: MergeLayer = {
+    const override: LooseLayer = {
       value: {
         log: { level: "debug" },
       },
@@ -437,14 +463,14 @@ describe("deepMerge — many-layer realistic scenario", () => {
   });
 
   it("realistic scenario with concat policy on a layer", () => {
-    const defaults: MergeLayer = {
+    const defaults: LooseLayer = {
       value: { plugins: ["core"] },
     };
-    const file: MergeLayer = {
+    const file: LooseLayer = {
       value: { plugins: ["auth", "logger"] },
       arrayMerge: "concat",
     };
-    const flag: MergeLayer = {
+    const flag: LooseLayer = {
       value: { plugins: ["debug"] },
       arrayMerge: "concat",
     };
@@ -504,5 +530,130 @@ describe("deepMerge — purity (no input mutation)", () => {
     result.nested["z"] = 3;
     expect(low.nested).toEqual({ x: 1 });
     expect(high.nested).toEqual({ y: 2 });
+  });
+});
+
+describe("deepMerge — provenance", () => {
+  it("returns an empty map for empty input", () => {
+    const { provenance } = deepMergeFull([]);
+    expect(provenance.size).toBe(0);
+  });
+
+  it("records provenance for a single primitive at root", () => {
+    const { provenance } = deepMergeFull([{ value: 42, source: "default" }]);
+    expect(provenance.get("")).toBe("default");
+  });
+
+  it("records provenance for nested primitives", () => {
+    const { provenance } = deepMergeFull([
+      { value: { server: { port: 8080, host: "localhost" } }, source: "file" },
+    ]);
+    expect(provenance.get("server.port")).toBe("file");
+    expect(provenance.get("server.host")).toBe("file");
+    // Object paths themselves are not recorded.
+    expect(provenance.has("server")).toBe(false);
+    expect(provenance.has("")).toBe(false);
+  });
+
+  it("higher layer wins → provenance reflects the higher layer's source", () => {
+    const { provenance } = deepMergeFull([
+      { value: { port: 3000 }, source: "default" },
+      { value: { port: 5000 }, source: "override" },
+    ]);
+    expect(provenance.get("port")).toBe("override");
+  });
+
+  it("undefined from higher does NOT overwrite lower's provenance", () => {
+    const { provenance } = deepMergeFull([
+      { value: { port: 3000 }, source: "default" },
+      { value: { port: undefined }, source: "env" },
+    ]);
+    expect(provenance.get("port")).toBe("default");
+  });
+
+  it("array with replace policy → provenance = higher layer", () => {
+    const { provenance } = deepMergeFull([
+      { value: { tags: ["a", "b"] }, source: "default" },
+      { value: { tags: ["c"] }, source: "override", arrayMerge: "replace" },
+    ]);
+    expect(provenance.get("tags")).toBe("override");
+  });
+
+  it("array with concat policy → provenance = higher layer (per A1)", () => {
+    const { provenance } = deepMergeFull([
+      { value: { tags: ["a"] }, source: "default" },
+      { value: { tags: ["b"] }, source: "file", arrayMerge: "concat" },
+    ]);
+    expect(provenance.get("tags")).toBe("file");
+  });
+
+  it("mixes provenance across keys depending on which layer last wrote each leaf", () => {
+    const { provenance } = deepMergeFull([
+      {
+        value: { server: { host: "0.0.0.0", port: 8080 } },
+        source: "default",
+      },
+      { value: { server: { port: 9090 } }, source: "file" },
+      { value: { server: { host: "127.0.0.1" } }, source: "env" },
+    ]);
+    expect(provenance.get("server.host")).toBe("env");
+    expect(provenance.get("server.port")).toBe("file");
+  });
+
+  it("single layer covers every leaf with that source", () => {
+    const { provenance } = deepMergeFull([
+      {
+        value: {
+          a: 1,
+          b: { c: 2, d: { e: 3 } },
+          tags: [1, 2, 3],
+          nul: null,
+        },
+        source: "override",
+      },
+    ]);
+    expect(provenance.get("a")).toBe("override");
+    expect(provenance.get("b.c")).toBe("override");
+    expect(provenance.get("b.d.e")).toBe("override");
+    expect(provenance.get("tags")).toBe("override");
+    expect(provenance.get("nul")).toBe("override");
+  });
+
+  it("prunes stale subtree entries when an object is replaced by a primitive", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: { y: 1, z: { w: 2 } } }, source: "default" },
+      { value: { x: "hello" }, source: "override" },
+    ]);
+    expect(provenance.get("x")).toBe("override");
+    expect(provenance.has("x.y")).toBe(false);
+    expect(provenance.has("x.z.w")).toBe(false);
+  });
+
+  it("prunes stale subtree when an object is replaced by an array", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: { y: 1, z: 2 } }, source: "default" },
+      { value: { x: [1, 2, 3] }, source: "override" },
+    ]);
+    expect(provenance.get("x")).toBe("override");
+    expect(provenance.has("x.y")).toBe(false);
+    expect(provenance.has("x.z")).toBe(false);
+  });
+
+  it("prunes stale leaf entry when a primitive is replaced by an object", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: "hello" }, source: "default" },
+      { value: { x: { y: 1 } }, source: "override" },
+    ]);
+    expect(provenance.has("x")).toBe(false);
+    expect(provenance.get("x.y")).toBe("override");
+  });
+
+  it("prunes stale array leaf when an array is replaced by an object", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: [1, 2] }, source: "default" },
+      { value: { x: { y: 1 } }, source: "override" },
+    ]);
+    expect(provenance.has("x")).toBe(false);
+    expect(provenance.get("x.y")).toBe("override");
   });
 });
