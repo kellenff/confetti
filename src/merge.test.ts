@@ -618,4 +618,42 @@ describe("deepMerge — provenance", () => {
     expect(provenance.get("tags")).toBe("override");
     expect(provenance.get("nul")).toBe("override");
   });
+
+  it("prunes stale subtree entries when an object is replaced by a primitive", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: { y: 1, z: { w: 2 } } }, source: "default" },
+      { value: { x: "hello" }, source: "override" },
+    ]);
+    expect(provenance.get("x")).toBe("override");
+    expect(provenance.has("x.y")).toBe(false);
+    expect(provenance.has("x.z.w")).toBe(false);
+  });
+
+  it("prunes stale subtree when an object is replaced by an array", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: { y: 1, z: 2 } }, source: "default" },
+      { value: { x: [1, 2, 3] }, source: "override" },
+    ]);
+    expect(provenance.get("x")).toBe("override");
+    expect(provenance.has("x.y")).toBe(false);
+    expect(provenance.has("x.z")).toBe(false);
+  });
+
+  it("prunes stale leaf entry when a primitive is replaced by an object", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: "hello" }, source: "default" },
+      { value: { x: { y: 1 } }, source: "override" },
+    ]);
+    expect(provenance.has("x")).toBe(false);
+    expect(provenance.get("x.y")).toBe("override");
+  });
+
+  it("prunes stale array leaf when an array is replaced by an object", () => {
+    const { provenance } = deepMergeFull([
+      { value: { x: [1, 2] }, source: "default" },
+      { value: { x: { y: 1 } }, source: "override" },
+    ]);
+    expect(provenance.has("x")).toBe(false);
+    expect(provenance.get("x.y")).toBe("override");
+  });
 });

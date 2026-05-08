@@ -25,6 +25,13 @@ export interface MergeLayer {
  *    Whichever layer triggered the final array operation owns the path,
  *    for both `replace` and `concat` policies (the higher layer "won").
  *  - Plain objects are never recorded; their children carry provenance.
+ *
+ * Path encoding caveat: keys are joined with `.` without escaping. A
+ * schema key that itself contains `.` (e.g. a literal field named
+ * `"server.host"`) is indistinguishable from the nested path
+ * `server -> host`. v0.1 does not address this; downstream consumers
+ * should treat `provenance.get(p)` as meaningful only for paths that
+ * currently exist in `value`.
  */
 export interface MergeResult {
   readonly value: unknown;
@@ -123,9 +130,30 @@ function mergeOne(
     return arrayPolicy === "concat" ? [...low, ...high] : [...high];
   }
 
-  // Type mismatch or primitives: higher wins.
+  // Type mismatch or primitives: higher wins. Prune any stale subtree
+  // entries from `low` first so the map doesn't accumulate orphans
+  // (e.g. {x:{y:1}} replaced by {x:1} would leave x.y dangling).
+  pruneSubtree(provenance, path);
   recordProvenance(provenance, path, high, source);
   return high;
+}
+
+/**
+ * Delete provenance entries rooted at `path`. For root (empty path),
+ * clears the entire map. Called when a higher layer wholesale replaces
+ * the subtree at `path` with a different shape (e.g. object → primitive).
+ */
+function pruneSubtree(provenance: Map<string, SourceName>, path: string): void {
+  if (path === "") {
+    provenance.clear();
+    return;
+  }
+  const prefix = `${path}.`;
+  for (const key of provenance.keys()) {
+    if (key === path || key.startsWith(prefix)) {
+      provenance.delete(key);
+    }
+  }
 }
 
 /**
