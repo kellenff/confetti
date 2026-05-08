@@ -1,6 +1,6 @@
 import { readFile as fsReadFile } from "node:fs/promises";
 import { watch as fsWatch } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type { Runtime, Unwatch } from "../types.js";
 
 /**
@@ -26,8 +26,18 @@ export const bunRuntime: Runtime = {
     return out;
   },
   watchPath(path: string, handler: () => void): Unwatch {
-    const watcher = fsWatch(dirname(path), { persistent: false }, () => {
-      handler();
+    const target = basename(path);
+    const watcher = fsWatch(
+      dirname(path),
+      { persistent: false },
+      (_event, filename) => {
+        if (filename === null || filename === target) {
+          handler();
+        }
+      },
+    );
+    watcher.on("error", () => {
+      /* deliberate: forwarded by task 14a wrapper */
     });
     return () => watcher.close();
   },

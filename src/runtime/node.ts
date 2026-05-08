@@ -1,6 +1,6 @@
 import { readFile as fsReadFile } from "node:fs/promises";
 import { watch as fsWatch } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type { Runtime, Unwatch } from "../types.js";
 
 /**
@@ -24,11 +24,28 @@ export const nodeRuntime: Runtime = {
     return out;
   },
   watchPath(path: string, handler: () => void): Unwatch {
-    // Low-level primitive only: watch the parent directory and forward
-    // any event. Higher-level concerns (debounce, atomic-rename detection,
-    // symlink resolution) belong to task 14a's watcher.
-    const watcher = fsWatch(dirname(path), { persistent: false }, () => {
-      handler();
+    // Low-level primitive: watch the parent directory (so atomic-rename
+    // doesn't lose the watcher) but filter to events for the target file.
+    // Debounce, symlink resolution, and onError wiring belong to task
+    // 14a's watcher built on top of this primitive.
+    const target = basename(path);
+    const watcher = fsWatch(
+      dirname(path),
+      { persistent: false },
+      (_event, filename) => {
+        // filename is null on some platforms — fall through to fire,
+        // letting the higher-level watcher decide. When provided, only
+        // forward events that match the target basename.
+        if (filename === null || filename === target) {
+          handler();
+        }
+      },
+    );
+    // Attach an error listener so EACCES/ENOSPC etc. don't surface as
+    // unhandled events. Task 14a will wire this to a user onError channel;
+    // for now, swallow rather than crash.
+    watcher.on("error", () => {
+      /* deliberate: forwarded by task 14a wrapper */
     });
     return () => watcher.close();
   },
