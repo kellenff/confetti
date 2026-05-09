@@ -114,7 +114,9 @@ jobs:
       # it from package.json without npm.
       - run: deno install --allow-scripts
       - name: Run Deno smoke
-        run: deno run --allow-read --allow-env --allow-sys scripts/smoke.deno.mjs
+        # --allow-write needed because the smoke script creates a tmp
+        # config fixture via mkdtemp + writeFile (see script header).
+        run: deno run --allow-read --allow-write --allow-env --allow-sys scripts/smoke.deno.mjs
 
   # ------------------------------------------------------------------
   # Bun smoke: same shape as Deno. Bun resolves bare `zod` from
