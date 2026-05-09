@@ -107,6 +107,12 @@ jobs:
         with:
           name: dist
           path: dist/
+      # Deno 2.x defaults nodeModulesDir to "auto" when a package.json is
+      # present in the workspace, so the bare `zod` import inside dist/ +
+      # the `npm:zod` import in the smoke script both require the
+      # node_modules directory to be populated. `deno install` materialises
+      # it from package.json without npm.
+      - run: deno install --allow-scripts
       - name: Run Deno smoke
         run: deno run --allow-read --allow-env --allow-sys scripts/smoke.deno.mjs
 
