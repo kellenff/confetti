@@ -175,3 +175,26 @@ All other code reviews PASS with sub-threshold minor issues (DRY suggestions, do
 - Task 13 needs a design discussion BEFORE spawning (provenance threading approach).
 - Task 15 is a learning-mode candidate (diff design); ask user if they want to hand-write before spawning.
 - Use `AskUserQuestion` to gate every batch start, every review-fix decision, and every merge.
+
+---
+
+## Post-MVP follow-ups
+
+Items deliberately deferred until after the v0.1 cut. Don't pull these into Batches 7-9 unless explicitly scoped.
+
+### Stryker mutation testing
+
+Add Stryker (https://stryker-mutator.io) once the v0.1 surface is stable. We have ~300 unit tests and high line coverage, but coverage doesn't measure assertion quality — mutation testing does. Specific motivation:
+
+- **Coercion logic in envSource** (`src/sources/env.ts`): boundary conditions on the boolean accepted-form sets, NaN guards, array splits, and aggregated-error paths are exactly the shape mutation testing catches well. Suspected weak assertion: tests that check `expect(...).toBeTruthy()` instead of exact value comparisons.
+- **deepMerge array policy + pollution guard** (`src/merge.ts`): the `__proto__`/`constructor`/`prototype` skip-list is security-critical. A mutant that flips the guard to a no-op should be killed by tests. Worth verifying.
+- **Pipeline freeze + Zod-error wrapping** (`src/pipeline.ts`): the `source: 'merged'` attribution and `cause` chain in AggregatedConfigError are easy to regress; mutation tests would force assertions to be tight.
+- **Walker refusal logic** (`src/env-keys/walker.ts`): the long `instanceof` chain is mutation-prone — flipping any check should cause a failure.
+
+Setup notes when this lands:
+
+- `npx stryker init` with the `vitest` runner preset (Stryker has first-class Vitest support since v8.x).
+- Scope initial mutator runs to `src/{merge,pipeline}.ts` and `src/sources/env.ts` — the highest-value targets — before expanding.
+- Watcher tests are timing-sensitive; mutation testing is likely to introduce false flakes there. Either exclude `src/watcher/**` or rely on the deterministic fake-timer scenarios in `src/watcher/test/scenarios/{debounce,idempotence}.test.ts` (skip the real-fs ones).
+- CI gating threshold: start with mutation score >= 75% as an advisory gate, ratchet up to 85%+ once the suite stabilises.
+- Don't block Batch 7-9 on this. Schedule for v0.1.x or v0.2 cycle.
