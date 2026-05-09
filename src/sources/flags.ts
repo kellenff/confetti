@@ -1,15 +1,22 @@
 import { StandardPriority, type Source } from "../types.js";
 
+/**
+ * Options for {@link flagsSource}.
+ */
 export interface FlagsSourceOptions {
-  /** Optional. Override the default name (used in diagnostics). Default: 'flag'. */
+  /** Optional. Override the source name used in diagnostics. Default: `'flag'`. */
   readonly name?: string;
-  /** Optional. Override priority. Default: StandardPriority.flag (75). */
+  /** Optional. Override the layer priority. Default: `StandardPriority.flag` (`75`). */
   readonly priority?: number;
 }
 
 /**
- * Source for pre-parsed CLI flags. We do not parse argv here; the caller
- * supplies the already-parsed object. Captures `value` by reference.
+ * Build a {@link Source} representing pre-parsed CLI flags.
+ *
+ * Confetti deliberately does not parse `argv` itself — the caller is
+ * expected to use whichever argv parser they prefer (`yargs`, `commander`,
+ * `mri`, the built-in `util.parseArgs`) and pass the already-parsed
+ * object as `value`. The supplied object is captured by reference.
  */
 export function flagsSource(
   value: unknown,

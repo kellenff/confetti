@@ -252,4 +252,11 @@ Temporary Items
 .claude/plan-state.json
 .claude/agent-outputs/
 .claude/settings.local.json
+.claude/verify-state.json
+.claude/verify-script.ts
+.claude/verify-results.json
+.claude/evidence/
+.claude/worktrees/
+.claude/grfp/
+.claude/.gitkeep
 

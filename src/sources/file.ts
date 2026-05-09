@@ -2,11 +2,15 @@ import { ParseError } from "../errors.js";
 import type { ParserRegistry } from "../parsers/registry.js";
 import { defaultRegistry, getParser } from "../parsers/registry.js";
 import { getRuntime } from "../runtime/detect.js";
-import type { Runtime, Source } from "../types.js";
+import type { Runtime, Source, Unwatch } from "../types.js";
 import { StandardPriority } from "../types.js";
+import { watchFile, type WatcherOptions } from "../watcher/index.js";
 
+/**
+ * Options for {@link fileSource}.
+ */
 export interface FileSourceOptions {
-  /** Path to the config file. Resolved relative to process.cwd() unless absolute. */
+  /** Path to the config file. Resolved relative to `process.cwd()` unless absolute. */
   readonly path: string;
   /** Optional. Force a specific format/parser by registry key (e.g. 'yaml'). Overrides extension detection. */
   readonly format?: string;
@@ -22,6 +26,15 @@ export interface FileSourceOptions {
   readonly arrayMerge?: "replace" | "concat";
   /** Optional. If true, missing file is treated as empty config (read() resolves undefined) instead of throwing. Default: false. */
   readonly optional?: boolean;
+  /**
+   * Optional. Watcher tuning passed through to {@link watchFile}.
+   * Currently exposes `debounceMs`, `resolveSymlinks`, and `onError`.
+   * If omitted, defaults are used.
+   */
+  readonly watch?: Pick<
+    WatcherOptions,
+    "debounceMs" | "resolveSymlinks" | "onError"
+  >;
 }
 
 /** Manual posix basename — avoids importing node:path so this module stays runtime-agnostic. */
@@ -46,6 +59,33 @@ function isMissingFileError(err: unknown): boolean {
   return typeof message === "string" && message.includes("No such file");
 }
 
+/**
+ * Build a {@link Source} backed by a single config file.
+ *
+ * The format is selected by `options.format` if supplied, else inferred
+ * from the file extension. Parsers are looked up in `options.parsers`
+ * (defaults to a registry pre-loaded with the built-in JSON parser).
+ * Unknown formats throw at construction time so callers see the failure
+ * before any I/O.
+ *
+ * The returned source supports `watch` via `watchFile` — if the host
+ * runtime exposes filesystem watching, the source notifies the pipeline
+ * on every change. Pass `optional: true` to treat a missing file as an
+ * empty contribution rather than an error.
+ *
+ * @example
+ * ```ts
+ * defineConfig({
+ *   schema,
+ *   sources: [
+ *     fileSource({ path: './config.yaml' }),
+ *     fileSource({ path: './config.local.yaml', optional: true }),
+ *   ],
+ * });
+ * ```
+ *
+ * @throws {@link Error} if no parser is registered for the resolved format.
+ */
 export function fileSource(options: FileSourceOptions): Source {
   const {
     path,
@@ -56,6 +96,7 @@ export function fileSource(options: FileSourceOptions): Source {
     priority,
     arrayMerge,
     optional,
+    watch: watchOptions,
   } = options;
 
   const formatKey = format ?? extOf(path);
@@ -91,6 +132,54 @@ export function fileSource(options: FileSourceOptions): Source {
           { sourcePath: path, parserName: formatKey, cause },
         );
       }
+    },
+    watch(notify: () => void, onError?: (err: unknown) => void): Unwatch {
+      // watchFile is async (it resolves symlinks and detects runtime), but
+      // Source.watch is synchronous. We start the watcher eagerly and wrap
+      // the eventual Unwatch in a closure that disposes once it resolves
+      // (or queues a disposal flag if Unwatch lands first).
+      //
+      // reportError fans out to BOTH the user's watchOptions.onError (for
+      // fs-level diagnostics they explicitly asked for) AND the pipeline's
+      // onError (so a startup failure surfaces through Config.onError as
+      // (err, source.name) instead of being silently dropped).
+      let disposed = false;
+      let innerUnwatch: Unwatch | undefined;
+      const reportError = (err: unknown) => {
+        watchOptions?.onError?.(err);
+        onError?.(err);
+      };
+      void watchFile(path, notify, {
+        ...(watchOptions?.debounceMs !== undefined
+          ? { debounceMs: watchOptions.debounceMs }
+          : {}),
+        ...(watchOptions?.resolveSymlinks !== undefined
+          ? { resolveSymlinks: watchOptions.resolveSymlinks }
+          : {}),
+        onError: reportError,
+        ...(runtimeOverride !== undefined ? { runtime: runtimeOverride } : {}),
+      })
+        .then((un) => {
+          if (disposed) {
+            const r = un();
+            if (r && typeof (r as Promise<void>).catch === "function") {
+              (r as Promise<void>).catch(reportError);
+            }
+          } else {
+            innerUnwatch = un;
+          }
+        })
+        .catch(reportError);
+      return () => {
+        disposed = true;
+        if (innerUnwatch) {
+          const r = innerUnwatch();
+          innerUnwatch = undefined;
+          if (r && typeof (r as Promise<void>).catch === "function") {
+            (r as Promise<void>).catch(reportError);
+          }
+        }
+      };
     },
   };
 

@@ -1,6 +1,6 @@
 {
   "name": "confetti",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "Layered, schema-first TypeScript config — inspired by spf13/viper",
   "license": "MIT",
@@ -23,6 +23,7 @@
     "dist",
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {

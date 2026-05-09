@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-flight runs on the same ref when new commits land. Saves
+# minutes; latest commit on a branch is the one we care about.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege at workflow level. Individual jobs can opt in to more
+# if ever needed (none currently do).
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Lint + type-check: runs once on Node 22. No need to fan out across
+  # runtimes — these are static checks of TypeScript source.
+  # ------------------------------------------------------------------
+  lint-and-typecheck:
+    name: Lint + type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run typecheck:test
+
+  # ------------------------------------------------------------------
+  # Build: produces dist/ once on Node 22 and uploads as an artifact.
+  # The Deno + Bun smoke jobs consume this so they import from compiled
+  # JS (they don't run tsc themselves).
+  # ------------------------------------------------------------------
+  build:
+    name: Build dist artifact
+    needs: lint-and-typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # ------------------------------------------------------------------
+  # Node test matrix: 20 + 22 on ubuntu, plus 22 on macOS to exercise
+  # watcher tests on Darwin (FSEvents path). vitest covers everything.
+  # Windows is deferred per plan section 5.
+  # ------------------------------------------------------------------
+  test-node:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    needs: lint-and-typecheck
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: ["20.x", "22.x"]
+        include:
+          - os: macos-latest
+            node: "22.x"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm test
+
+  # ------------------------------------------------------------------
+  # Deno smoke: prove the built dist/ runs unmodified under Deno.
+  # vitest is Node-specific — we don't try to run it here.
+  # Uses scripts/smoke.deno.mjs which imports zod via the npm: specifier.
+  # ------------------------------------------------------------------
+  test-deno:
+    name: Deno ${{ matrix.deno }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        deno: ["v2.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ matrix.deno }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      # Deno 2.x defaults nodeModulesDir to "auto" when a package.json is
+      # present in the workspace, so the bare `zod` import inside dist/ +
+      # the `npm:zod` import in the smoke script both require the
+      # node_modules directory to be populated. `deno install` materialises
+      # it from package.json without npm.
+      - run: deno install --allow-scripts
+      - name: Run Deno smoke
+        # --allow-write needed because the smoke script creates a tmp
+        # config fixture via mkdtemp + writeFile (see script header).
+        run: deno run --allow-read --allow-write --allow-env --allow-sys scripts/smoke.deno.mjs
+
+  # ------------------------------------------------------------------
+  # Bun smoke: same shape as Deno. Bun resolves bare `zod` from
+  # node_modules naturally, so it reuses scripts/smoke.mjs as-is.
+  # ------------------------------------------------------------------
+  test-bun:
+    name: Bun ${{ matrix.bun }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bun: ["latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Run Bun smoke
+        run: bun run scripts/smoke.mjs
