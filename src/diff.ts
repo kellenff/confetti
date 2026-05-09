@@ -1,5 +1,7 @@
 import type { ConfigDiff } from "./types.js";
 
+type DiffEntry = ConfigDiff[number];
+
 /**
  * Compute a structural difference between two config snapshots.
  *
@@ -26,11 +28,7 @@ import type { ConfigDiff } from "./types.js";
  *   one entry at that path with no recursion into the structured side.
  */
 export function diff(before: unknown, after: unknown): ConfigDiff {
-  const entries: Array<{
-    readonly path: readonly string[];
-    readonly before: unknown;
-    readonly after: unknown;
-  }> = [];
+  const entries: Array<DiffEntry> = [];
   walk([], before, after, entries);
   entries.sort((a, b) => {
     const ka = a.path.join(".");
@@ -46,11 +44,7 @@ function walk(
   path: readonly string[],
   before: unknown,
   after: unknown,
-  out: Array<{
-    readonly path: readonly string[];
-    readonly before: unknown;
-    readonly after: unknown;
-  }>,
+  out: Array<DiffEntry>,
 ): void {
   if (sameValue(before, after)) return;
 

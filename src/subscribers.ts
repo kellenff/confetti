@@ -35,19 +35,17 @@ export class Subscribers {
 
   onError(handler: ErrorHandler): Unwatch {
     this.#error.push(handler);
-    if (!this.#drained && this.#pendingErrors.length > 0) {
-      this.#drained = true;
-      const buffered = this.#pendingErrors;
-      this.#pendingErrors = [];
-      for (const { err, source } of buffered) {
-        try {
-          handler(err, source);
-        } catch {
-          // intentional: onError-throws must not loop or escalate.
-        }
+    // First handler attaches: drain any buffered errors that arrived before
+    // anyone was listening. Subsequent attaches see an empty buffer (no-op).
+    const buffered = this.#pendingErrors;
+    this.#pendingErrors = [];
+    this.#drained = true;
+    for (const { err, source } of buffered) {
+      try {
+        handler(err, source);
+      } catch {
+        // intentional: onError-throws must not loop or escalate.
       }
-    } else {
-      this.#drained = true;
     }
     return () => {
       const i = this.#error.indexOf(handler);
